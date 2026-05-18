@@ -501,7 +501,7 @@ chroot_build_pkg() {
   local pkg="$1" pkgdir="$2"
   if ! $CHROOT_READY; then
     info "Building '$pkg' with makepkg (no chroot)..."
-    (cd "$pkgdir" && makepkg -s --noconfirm) || return 1
+    (cd "$pkgdir" && makepkg -sf --noconfirm) || return 1
     return 0
   fi
 
@@ -514,7 +514,7 @@ chroot_build_pkg() {
 
   if ! $build_ok; then
     warn "Chroot build failed for '$pkg', falling back to direct makepkg..."
-    (cd "$pkgdir" && makepkg -s --noconfirm) || {
+    (cd "$pkgdir" && makepkg -sf --noconfirm) || {
       err "Both chroot and direct build failed for '$pkg'"
       return 1
     }
@@ -542,7 +542,7 @@ chroot_install_pkg() {
   else
     info "Building '$pkg' then installing..."
     local pkgfile
-    (cd "$pkgdir" && makepkg -s --noconfirm) || return 1
+    (cd "$pkgdir" && makepkg -sf --noconfirm) || return 1
     pkgfile=$(find "$pkgdir" -maxdepth 1 -name "*.pkg.tar.zst" -print -quit 2>/dev/null)
     if [[ -n "$pkgfile" ]]; then
       sudo pacman -U --noconfirm "$pkgfile" || return 1
@@ -730,7 +730,7 @@ install_package() {
   else
     info "Building '$pkg' then installing..."
     local pkgfile
-    (cd "$pkgdir" && makepkg -s --noconfirm) || {
+    (cd "$pkgdir" && makepkg -sf --noconfirm) || {
       err "Failed to build '$pkg'"
       return 1
     }
@@ -776,7 +776,7 @@ build_package_only() {
   if $CHROOT_READY; then
     chroot_build_pkg "$pkg" "$pkgdir" || return 1
   else
-    (cd "$pkgdir" && makepkg -s --noconfirm) || return 1
+    (cd "$pkgdir" && makepkg -sf --noconfirm) || return 1
   fi
 
   ok "Built '$pkg' — package file in $pkgdir"
