@@ -540,8 +540,16 @@ chroot_install_pkg() {
     info "Installing '$pkg' from package file..."
     sudo pacman -U --noconfirm "$pkgfile" || return 1
   else
-    info "Building and installing '$pkg' directly..."
-    (cd "$pkgdir" && sudo makepkg -si --noconfirm) || return 1
+    info "Building '$pkg' then installing..."
+    local pkgfile
+    (cd "$pkgdir" && makepkg -s --noconfirm) || return 1
+    pkgfile=$(find "$pkgdir" -maxdepth 1 -name "*.pkg.tar.zst" -print -quit 2>/dev/null)
+    if [[ -n "$pkgfile" ]]; then
+      sudo pacman -U --noconfirm "$pkgfile" || return 1
+    else
+      err "No package file found after build for '$pkg'"
+      return 1
+    fi
   fi
 }
 
@@ -720,11 +728,22 @@ install_package() {
       return 1
     fi
   else
-    info "Building and installing '$pkg'..."
-    (cd "$pkgdir" && sudo makepkg -si --noconfirm) || {
-      err "Failed to build/install '$pkg'"
+    info "Building '$pkg' then installing..."
+    local pkgfile
+    (cd "$pkgdir" && makepkg -s --noconfirm) || {
+      err "Failed to build '$pkg'"
       return 1
     }
+    pkgfile=$(find "$pkgdir" -maxdepth 1 -name "*.pkg.tar.zst" -print -quit 2>/dev/null)
+    if [[ -n "$pkgfile" ]]; then
+      sudo pacman -U --noconfirm "$pkgfile" || {
+        err "Failed to install '$pkg'"
+        return 1
+      }
+    else
+      err "No package file found after build for '$pkg'"
+      return 1
+    fi
     ok "Installed '$pkg'"
   fi
 }
