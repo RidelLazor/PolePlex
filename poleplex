@@ -165,7 +165,7 @@ ${1}
 pkg_count() { aur_json "print(d.get('resultcount', 0))"; }
 pkg_results() { aur_json "
 for p in d.get('results', []):
-    print(p.get('Name', ''), p.get('Version', ''), p.get('Description', '')[:60], sep='|')
+    print(p.get('Name', ''), p.get('Version', ''), p.get('Maintainer', 'orphan'), p.get('Description', '')[:80], sep='|')
 "; }
 pkg_field() {
   local field="$1"
@@ -196,11 +196,11 @@ search_packages() {
   fi
 
   echo ""
-  printf "  %-30s %-12s %s\n" "Package" "Version" "Description"
-  printf "  %-30s %-12s %s\n" "-------" "-------" "-----------"
+  printf "  %-30s %-18s %-12s %s\n" "Package" "Author" "Version" "Description"
+  printf "  %-30s %-18s %-12s %s\n" "-------" "------" "-------" "-----------"
 
-  echo "$data" | pkg_results | while IFS='|' read -r name ver desc; do
-    printf "  %-30s %-12s %s\n" "$name" "$ver" "$desc"
+  echo "$data" | pkg_results | while IFS='|' read -r name ver author desc; do
+    printf "  %-30s %-18s %-12s %s\n" "$name" "$author" "$ver" "$desc"
   done
   echo ""
 }
@@ -209,21 +209,36 @@ search_packages() {
 
 interactive_search() {
   local query="${1:-}"
-  local -a names versions descs
+  local -a names versions authors descs
   local data count
-  local page_size selected scroll chosen_line
+  local page_size selected scroll
   local term_width term_height
+  local mouse_enabled=false
+
+  # Enable SGR mouse tracking
+  mouse_on() {
+    printf '\e[?1000h\e[?1002h\e[?1006h' 2>/dev/null
+    mouse_enabled=true
+  }
+  mouse_off() {
+    printf '\e[?1006l\e[?1002l\e[?1000l' 2>/dev/null
+    mouse_enabled=false
+  }
 
   stty raw -echo 2>/dev/null || true
   hide_cursor
+  mouse_on
+
+  # Terminal resize trap
+  trap 'term_width=$(tput_cols); term_height=$(tput_lines); page_size=$(( term_height - 6 )); (( page_size < 5 )) && page_size=5' WINCH
 
   fetch_results() {
     data=$(aur_api "search" "$query" 2>/dev/null || echo "")
     count=$(echo "$data" 2>/dev/null | pkg_count 2>/dev/null || echo 0)
-    names=(); versions=(); descs=()
+    names=(); versions=(); authors=(); descs=()
     if [[ "$count" -gt 0 ]]; then
-      while IFS='|' read -r n v d; do
-        names+=("$n"); versions+=("$v"); descs+=("$d")
+      while IFS='|' read -r n v a d; do
+        names+=("$n"); versions+=("$v"); authors+=("$a"); descs+=("$d")
       done < <(echo "$data" 2>/dev/null | pkg_results 2>/dev/null)
     fi
   }
@@ -232,21 +247,35 @@ interactive_search() {
 
   term_width=$(tput_cols)
   term_height=$(tput_lines)
-  page_size=$(( term_height - 6 ))
+  page_size=$(( term_height - 7 ))
   (( page_size < 5 )) && page_size=5
   selected=0
   scroll=0
 
-  draw_screen() {
-    term_width=$(tput_cols)
-    term_height=$(tput_lines)
-    page_size=$(( term_height - 6 ))
-    (( page_size < 5 )) && page_size=5
-
+  draw_header() {
     cursor_pos 0 0
-    local header=" Search: $query"
-    printf "\033[1;44m%-*s\033[0m" "$term_width" "$header"
+    local bar
+    bar=$(printf " Search: %s" "$query")
+    # If query is empty, show placeholder
+    if [[ -z "$query" ]]; then
+      printf '\033[1;44m%-*s\033[0m' "$term_width" " Search: [type to search AUR]"
+    else
+      printf '\033[1;44m%-*s\033[0m' "$term_width" "$bar"
+    fi
+  }
 
+  draw_column_headers() {
+    cursor_pos 1 0
+    local name_w author_w ver_w desc_w
+    name_w=30
+    author_w=18
+    ver_w=14
+    desc_w=$(( term_width - name_w - author_w - ver_w - 5 ))
+    (( desc_w < 10 )) && desc_w=10
+    printf '\033[1;37m%-*s %-*s %-*s %s\033[0m' "$name_w" "Package" "$author_w" "Author" "$ver_w" "Version" "Description"
+  }
+
+  draw_results() {
     local total=${#names[@]}
     [[ "$scroll" -gt "$selected" ]] && scroll=$selected
     [[ "$scroll" -lt $(( selected - page_size + 1 )) ]] && scroll=$(( selected - page_size + 1 ))
@@ -257,32 +286,61 @@ interactive_search() {
     local end=$(( scroll + page_size ))
     (( end > total )) && end=$total
 
-    local line=1
+    local name_w=30 author_w=18 ver_w=14
+    local desc_w=$(( term_width - name_w - author_w - ver_w - 5 ))
+    (( desc_w < 10 )) && desc_w=10
+
+    local line=2
     for (( i = scroll; i < end; i++ )); do
       cursor_pos "$line" 0
-      local entry=""
+      local entry
       if [[ "$total" -gt 0 ]]; then
-        local num=$(( i + 1 ))
         local d="${descs[i]}"
-        [[ ${#d} -gt $(( term_width - 48 )) ]] && d="${d:0:$(( term_width - 51 ))}..."
-        entry=$(printf "%4d  %-30s %-12s %s" "$num" "${names[i]}" "${versions[i]}" "$d")
+        [[ ${#d} -gt $desc_w ]] && d="${d:0:$(( desc_w - 3 ))}..."
+        entry=$(printf "%-*s %-*s %-*s %s" "$name_w" "${names[i]}" "$author_w" "${authors[i]}" "$ver_w" "${versions[i]}" "$d")
       fi
       if [[ "$i" -eq "$selected" ]]; then
-        printf "\033[1;7m%-*s\033[0m" "$term_width" "$entry"
+        printf '\033[7m%-*s\033[0m' "$term_width" "$entry"
+      elif (( i % 2 == 1 )); then
+        printf '\033[48;5;236m%-*s\033[0m' "$term_width" "$entry"
       else
-        printf "%-*s" "$term_width" "$entry"
+        printf '%-*s' "$term_width" "$entry"
       fi
       ((line++))
     done
 
+    # Clear remaining result lines
     while (( line < term_height - 1 )); do
-      cursor_pos "$line" 0; printf "%*s" "$term_width" ""
+      cursor_pos "$line" 0
+      printf '%*s' "$term_width" ""
       ((line++))
     done
+  }
 
+  draw_footer() {
     cursor_pos $(( term_height - 1 )) 0
-    local footer=" [↑↓] nav  [Home/End] jump  [type] filter  [Enter] install  [q] quit  $total results"
-    printf "\033[1;40m%-*s\033[0m" "$term_width" "$footer"
+    local total=${#names[@]}
+    local pos_info
+    if [[ "$total" -gt 0 ]]; then
+      pos_info="$((selected+1))/$total"
+    else
+      pos_info="0/0"
+    fi
+    local footer
+    footer=$(printf ' [↑↓] nav  [Click] select  [Enter] install  [Esc] clear  [q] quit  %s' "$pos_info")
+    printf '\033[1;40m%-*s\033[0m' "$term_width" "$footer"
+  }
+
+  draw_screen() {
+    term_width=$(tput_cols)
+    term_height=$(tput_lines)
+    page_size=$(( term_height - 7 ))
+    (( page_size < 5 )) && page_size=5
+
+    draw_header
+    draw_column_headers
+    draw_results
+    draw_footer
   }
 
   local query_changed=false
@@ -292,9 +350,9 @@ interactive_search() {
     key=$(read_key)
     case "$key" in
       q|Q) break ;;
-      $'\e[A'|$'A') # Up
+      $'\e[A'|$'A') # Up arrow
         (( selected > 0 )) && { ((selected--)); query_changed=false; } ;;
-      $'\e[B'|$'B') # Down
+      $'\e[B'|$'B') # Down arrow
         (( selected < ${#names[@]} - 1 )) && { ((selected++)); query_changed=false; } ;;
       $'\e[H'|$'1') # Home
         selected=0; query_changed=false ;;
@@ -308,20 +366,105 @@ interactive_search() {
         (( selected += page_size ))
         (( selected >= ${#names[@]} )) && selected=$(( ${#names[@]} - 1 ))
         query_changed=false ;;
-      $'\n'|$'\r') # Enter
+      $'\n'|$'\r') # Enter — install selected
         if [[ ${#names[@]} -gt 0 && "$selected" -lt ${#names[@]} ]]; then
-          stty sane 2>/dev/null || true; show_cursor
+          mouse_off; stty sane 2>/dev/null || true; show_cursor
           echo ""
           install_package "${names[$selected]}"
-          stty raw -echo 2>/dev/null || true; hide_cursor
+          stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
+        fi
+        ;;
+      $'\e') # ESC — clear query or exit
+        if [[ -n "$query" ]]; then
+          query=""; query_changed=true
+        else
+          break
+        fi
+        ;;
+      $'\177'|$'\b'|$'\x7f') # Backspace
+        query="${query%?}"
+        query_changed=true ;;
+      $'\e[M'*) # Mouse event (SGR/UTF-8 mode)
+        local mouse_data="${key:3}"
+        local btn=$(( $(printf '%d' "'${mouse_data:0:1}") - 32 ))
+        local mx=$(( $(printf '%d' "'${mouse_data:1:1}") - 32 ))
+        local my=$(( $(printf '%d' "'${mouse_data:2:1}") - 33 ))
+
+        # Scroll wheel
+        if [[ "$btn" -eq 64 ]]; then
+          (( selected > 0 )) && ((selected--))
+          query_changed=false
+        elif [[ "$btn" -eq 65 ]]; then
+          (( selected < ${#names[@]} - 1 )) && ((selected++))
+          query_changed=false
+        # Button 1 = left click
+        elif [[ "$btn" -eq 0 ]]; then
+          local click_row=$my
+          local click_idx=$(( scroll + click_row - 2 ))
+          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
+            selected=$click_idx
+            query_changed=false
+          fi
+        # Double click (btn 2) or release — install
+        elif [[ "$btn" -eq 2 || "$btn" -eq 9 ]]; then
+          local click_row=$my
+          local click_idx=$(( scroll + click_row - 2 ))
+          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
+            selected=$click_idx
+            mouse_off; stty sane 2>/dev/null || true; show_cursor
+            echo ""
+            install_package "${names[$selected]}"
+            stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
+          fi
+        fi
+        ;;
+      $'\e[<'*)
+        # SGR mouse format: ESC [ < btn ; x ; y M
+        local sgr_data="${key:2}"
+        local btn mx my
+        btn=$(echo "$sgr_data" | cut -d';' -f1)
+        mx=$(echo "$sgr_data" | cut -d';' -f2)
+        my=$(echo "$sgr_data" | cut -d';' -f3 | sed 's/[MmLl]$//')
+        if [[ "$btn" -eq 64 ]]; then
+          (( selected > 0 )) && ((selected--))
+        elif [[ "$btn" -eq 65 ]]; then
+          (( selected < ${#names[@]} - 1 )) && ((selected++))
+        elif [[ "$btn" -eq 0 ]]; then
+          local click_row=$my
+          local click_idx=$(( scroll + click_row - 2 ))
+          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
+            selected=$click_idx
+          fi
+        elif [[ "$btn" -eq 2 || "$btn" -eq 1 ]]; then
+          local click_row=$my
+          local click_idx=$(( scroll + click_row - 2 ))
+          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
+            selected=$click_idx
+            mouse_off; stty sane 2>/dev/null || true; show_cursor
+            echo ""
+            install_package "${names[$selected]}"
+            stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
+          fi
         fi
         ;;
       $'\e'*)
-        # other escape sequences, ignore
+        # Other escape sequences — check for longer mouse sequences
+        if [[ "$key" == $'\e[M'* || "$key" == $'\e[<'* ]]; then
+          : # already handled above
+        fi
         ;;
-      $'\177'|$'\b') # Backspace
-        query="${query%?}"
-        query_changed=true ;;
+      $'\t') # Tab — cycle through install/build/info
+        if [[ ${#names[@]} -gt 0 && "$selected" -lt ${#names[@]} ]]; then
+          local pkg_name="${names[$selected]}"
+          mouse_off; stty sane 2>/dev/null || true; show_cursor
+          echo ""
+          package_info "$pkg_name"
+          echo ""
+          msg "Press Enter to install, or any key to return to search..."
+          read -r -n1 2>/dev/null || true
+          stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
+        fi
+        ;;
       *)
         if [[ -n "$key" && "$key" != $'\e' ]]; then
           query+="$key"
@@ -335,8 +478,10 @@ interactive_search() {
     fi
   done
 
+  mouse_off
   stty sane 2>/dev/null || true
   show_cursor
+  trap - WINCH
   echo ""
 }
 
