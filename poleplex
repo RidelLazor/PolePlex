@@ -557,6 +557,17 @@ chroot_add_to_repo() {
   local pkg="$1" pkgdir="$2"
   local pkgfile
 
+  # Only needed when chroot builds are active (local repo serves deps into chroot)
+  if ! $CHROOT_READY; then
+    return 0
+  fi
+
+  # Ensure repo directory exists
+  sudo mkdir -p "$REPO_DIR"
+  if [[ ! -f "$REPO_DIR/poleplex.db.tar.gz" ]]; then
+    sudo repo-add "$REPO_DIR/poleplex.db.tar.gz" 2>/dev/null || true
+  fi
+
   # Search chroot build output first, then local pkgdir
   pkgfile=$(find /var/lib/poleplex/chroot/ -path "*/build/*" -name "${pkg}-*.pkg.tar.zst" -print -quit 2>/dev/null) || true
   if [[ -z "$pkgfile" ]]; then
