@@ -23,6 +23,7 @@ CHROOT_READY=false
 PARALLEL_JOBS=0
 HAS_DEVTOOLS=false
 INTERACTIVE=false
+NOCONFIRM=false
 TARGET_PKG=""
 
 [[ -t 2 ]] || USE_COLOR=false
@@ -975,6 +976,7 @@ Options:
   -j, --jobs <n>          Parallel build jobs (default: nproc)
   -v, --verbose           Verbose output
   -q, --quiet             Suppress color and info output
+  -y, --noconfirm         Skip confirmation prompts; auto-cache sudo via SUDO_PASSWORD
 
 Install: curl -fsSL https://ridellazor.github.io/PolePlex/install.sh | bash
 
@@ -1038,6 +1040,7 @@ main() {
       -p|--path) CUSTOM_PATH="$2"; shift 2 ;;
       -t|--tarball) CLONE_MODE=false; shift ;;
       -u|--update) update_mode=true; shift ;;
+      -y|--noconfirm) NOCONFIRM=true; shift ;;
       --) shift; args+=("$@"); break ;;
       -*)
         err "Unknown option: $1"
@@ -1065,6 +1068,16 @@ main() {
         ;;
     esac
   done
+
+  # ── Sudo auto-cache (--noconfirm + SUDO_PASSWORD) ──
+  if $NOCONFIRM && [[ -n "${SUDO_PASSWORD:-}" ]]; then
+    if ! echo "$SUDO_PASSWORD" | sudo -S -v 2>/dev/null; then
+      err "SUDO_PASSWORD is incorrect"
+      err "Fix it or unset it and run without --noconfirm"
+      exit 1
+    fi
+    debug "Sudo password cached (will not prompt for ~5 min)"
+  fi
 
   # ── Search (plain text only) ──
   if [[ -n "$search_term" ]]; then
