@@ -23,10 +23,10 @@ All three are part of the `base-devel` group on Arch Linux.
 
 ## Installation
 
-### One-liner (via GitHub Pages)
+### One-liner
 
 ```bash
-curl -fsSL https://anomalyco.github.io/poleplex/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/RidelLazor/PolePlex/main/install.sh | bash
 ```
 
 Installs to `~/poleplex`, adds to PATH. Run it again to update.
@@ -124,14 +124,14 @@ CLONE_MODE=false
 ```
 poleplex/
 ├── poleplex            # Main script
+├── install.sh          # Bootstrap installer (raw.githubusercontent.com)
 ├── PKGBUILD            # AUR package definition
 ├── poleplex.install    # Install scriptlet for AUR package
 ├── Makefile            # Install/uninstall targets
 ├── LICENSE             # MIT License
 ├── README.md           # This file
-├── docs/               # GitHub Pages (anomalyco.github.io/poleplex)
-│   ├── index.html      # Landing page
-│   └── install.sh      # Bootstrap installer
+├── docs/               # GitHub Pages (ridellazor.github.io/PolePlex)
+│   └── index.html      # Landing page
 ├── completions/        # Shell completion files
 │   ├── poleplex.bash
 │   ├── poleplex.zsh
