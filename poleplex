@@ -509,7 +509,7 @@ chroot_build_pkg() {
   local build_ok=true
   (
     cd "$pkgdir"
-    sudo makechrootpkg -c -r "$CHROOT_DIR" -n --noconfirm 2>&1
+    sudo makechrootpkg -c -r "$CHROOT_DIR" -n -- -f 2>&1
   ) || build_ok=false
 
   if ! $build_ok; then
