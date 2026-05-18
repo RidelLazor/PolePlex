@@ -1,0 +1,88 @@
+.TH POLEPLEX 1 "May 2026" "PolePlex v1.0.0" "User Commands"
+.SH NAME
+poleplex \- minimalist AUR package downloader
+.SH SYNOPSIS
+.B poleplex
+\fI\,command\/\fR [\fI\,options\/\fR] [\fI\,package\/\fR...]
+.SH DESCRIPTION
+PolePlex downloads PKGBUILDs and related files from the Arch User Repository (AUR).
+By default it uses git clone with depth 1, falling back to tarball download.
+Commands can be given as short forms (\fBs\fR, \fBi\fR, \fBd\fR, \fBr\fR, \fBu\fR) or
+long forms (\fBsearch\fR, \fBinfo\fR, \fBdownload\fR, \fBremove\fR, \fBupdate\fR).
+Traditional flag syntax (\fB\-s\fR, \fB\-i\fR, etc.) is also supported.
+.SH COMMANDS
+.TP
+\fBs\fR, \fBsearch\fR \fI\,term\/\fR
+Search the AUR for packages matching \fI\,term\/\fR.
+.TP
+\fBi\fR, \fBinfo\fR \fI\,package\/\fR
+Show detailed information about \fI\,package\/\fR from the AUR.
+.TP
+\fBd\fR, \fBdownload\fR \fI\,package\/\fR...
+Download \fI\,package\/\fR(s) from the AUR. This is the default when no command is given.
+.TP
+\fBr\fR, \fBremove\fR \fI\,package\/\fR...
+Remove previously downloaded \fI\,package\/\fR(s) from the local cache.
+.TP
+\fBu\fR, \fBupdate\fR [\fI\,directory\/\fR]
+Update all AUR packages previously downloaded to \fI\,directory\/\fR (default: ~/.cache/poleplex/build/).
+.TP
+\fBh\fR, \fBhelp\fR
+Display help message and exit.
+.TP
+\fBV\fR, \fBversion\fR
+Display version information and exit.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Enable verbose debug output.
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress color and informational output.
+.TP
+\fB\-p\fR, \fB\-\-path\fR \fI\,directory\/\fR
+Download packages into the specified \fI\,directory\/\fR instead of the default cache.
+.TP
+\fB\-t\fR, \fB\-\-tarball\fR
+Download the tarball snapshot instead of using git clone.
+.SH CONFIGURATION
+PolePlex reads configuration from
+.IR ~/.config/poleplex/poleplex.conf
+if it exists. This is a bash script that is sourced at startup. You can override
+.B BUILD_DIR
+and
+.B CLONE_MODE
+variables.
+.SH EXIT STATUS
+.TP
+0
+Successful completion.
+.TP
+1
+General error (network failure, missing package, etc.).
+.SH EXAMPLES
+.TP
+Search the AUR:
+poleplex s firefox
+.TP
+View package details:
+poleplex i spotify
+.TP
+Download a package:
+poleplex d firefox-developer
+poleplex firefox-developer
+.TP
+Download to a custom directory:
+poleplex d \-p ~/builds yay paru
+.TP
+Remove a downloaded package:
+poleplex r yay
+.TP
+Update all downloaded packages:
+poleplex u
+.SH REPORTING BUGS
+https://github.com/anomalyco/poleplex/issues
+.SH LICENSE
+MIT
+.SH AUTHOR
+Danish <danish@anomalyco.dev>

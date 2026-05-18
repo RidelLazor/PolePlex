@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+declare -r VERSION="1.0.0"
+declare -r AUR_BASE_URL="https://aur.archlinux.org"
+declare -r AUR_RPC_URL="${AUR_BASE_URL}/rpc/v5"
+declare -r CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/poleplex"
+declare -r CONFIG_FILE="${CONFIG_DIR}/poleplex.conf"
+declare -r BUILD_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/poleplex/build"
+
+USE_COLOR=true
+VERBOSE=false
+CLONE_MODE=true
+
+[[ -t 2 ]] || USE_COLOR=false
+
+color() { local c="$1"; shift; $USE_COLOR && printf "\033[%sm%s\033[0m" "$c" "$*" || printf "%s" "$*"; }
+info()  { printf "%s %s\n"  "$(color '1;34' '::')" "$*"; }
+ok()    { printf "%s %s\n"  "$(color '1;32' '=>')" "$*"; }
+warn()  { printf "%s %s\n"  "$(color '1;33' '??')" "$*" >&2; }
+err()   { printf "%s %s\n"  "$(color '1;31' '!!')" "$*" >&2; }
+msg()   { printf "    %s\n" "$*"; }
+debug() { $VERBOSE && printf "%s %s\n" "$(color '1;35' '--')" "$*" >&2 || true; }
+
+usage() {
+  cat <<EOF
+Usage: poleplex <command> [options] [package]...
+
+Commands:
+  s, search  <term>     Search AUR for packages
+  i, info    <pkg>      Show detailed package info
+  d, download <pkg>     Download a package from AUR (default)
+  r, remove  <pkg>      Remove a downloaded package from cache
+  u, update  [dir]      Update all downloaded packages
+  h, help               Show this help message
+  V, version            Show version
+
+Options:
+  -p, --path <dir>      Download/remove from specific directory
+  -t, --tarball         Use tarball instead of git clone
+  -v, --verbose         Verbose output
+  -q, --quiet           Suppress color and info output
+
+Shortened form (no dashes needed):
+  poleplex s firefox          instead of  poleplex -s firefox
+  poleplex i spotify           instead of  poleplex -i spotify
+  poleplex d firefox-dev       instead of  poleplex firefox-dev
+  poleplex r firefox-dev       remove from cache
+  poleplex u                   update everything
+
+Flags still work too:
+  poleplex -s firefox          search
+  poleplex -i spotify          info
+  poleplex firefox-dev         download
+  poleplex -u                  update
+
+Examples:
+  poleplex s  firefox
+  poleplex i  spotify
+  poleplex d  yay paru
+  poleplex r  yay
+  poleplex u
+  poleplex -p ~/aur yay paru
+  poleplex -t firefox-dev
+
+Report bugs at: https://github.com/anomalyco/poleplex/issues
+EOF
+  exit 0
+}
+
+version() {
+  echo "PolePlex v${VERSION}"
+  exit 0
+}
+
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    debug "Loading config: $CONFIG_FILE"
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+  fi
+}
+
+check_deps() {
+  local missing=()
+  command -v curl &>/dev/null || missing+=("curl")
+  command -v git  &>/dev/null || missing+=("git")
+  command -v tar  &>/dev/null || missing+=("tar")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    err "Missing dependencies: ${missing[*]}"
+    err "Install them with your package manager."
+    exit 1
+  fi
+}
+
+aur_api() {
+  local type="$1" arg="$2"
+  if [[ "$type" == "search" ]]; then
+    curl -fsS "${AUR_RPC_URL}/search/${arg}" 2>/dev/null || return 1
+  elif [[ "$type" == "info" ]]; then
+    curl -fsS "${AUR_RPC_URL}/info/${arg}" 2>/dev/null || return 1
+  fi
+}
+
+search_packages() {
+  local term="$*"
+  info "Searching AUR for: $term"
+
+  local data
+  data=$(aur_api "search" "$term") || {
+    err "Search failed (network error or AUR down)"
+    exit 1
+  }
+
+  local count
+  count=$(echo "$data" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('resultcount', 0))
+" 2>/dev/null) || count=0
+
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    warn "No results found for '$term'"
+    exit 1
+  fi
+
+  echo ""
+  printf "  %-30s %-12s %s\n" "Package" "Version" "Description"
+  printf "  %-30s %-12s %s\n" "-------" "-------" "-----------"
+
+  echo "$data" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for pkg in d.get('results', []):
+    name = pkg.get('Name', '')
+    ver = pkg.get('Version', '')
+    desc = pkg.get('Description', '')[:60]
+    if name:
+        print(f'{name:<30s} {ver:<12s} {desc}')
+" 2>/dev/null
+  echo ""
+}
+
+package_info() {
+  local pkg="$1"
+  info "Fetching info for: $pkg"
+
+  local data
+  data=$(aur_api "info" "$pkg") || {
+    err "Failed to get info for '$pkg' (not found or network error)"
+    exit 1
+  }
+
+  local output
+  output=$(echo "$data" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+results = d.get('results', [])
+if not results:
+    print('ERROR:not-found')
+    sys.exit(0)
+pkg = results[0]
+fields = [
+    ('Repository', 'AUR'),
+    ('Name',        pkg.get('Name', '')),
+    ('Version',     pkg.get('Version', '')),
+    ('Description', pkg.get('Description', '')),
+    ('Maintainer',  pkg.get('Maintainer', '')),
+    ('Votes',       str(pkg.get('NumVotes', ''))),
+    ('Out-of-date', str(pkg.get('OutOfDate', '')) if pkg.get('OutOfDate') else 'No'),
+    ('Popularity',  str(pkg.get('Popularity', ''))),
+    ('URL',         pkg.get('URL', '')),
+    ('License',     ', '.join(pkg.get('License', [])) if isinstance(pkg.get('License'), list) else str(pkg.get('License', ''))),
+    ('Submitted',   str(pkg.get('FirstSubmitted', ''))),
+    ('Updated',     str(pkg.get('LastModified', ''))),
+]
+for label, val in fields:
+    print(f'{label:20s} {val}')
+" 2>/dev/null) || output=""
+
+  if [[ "$output" == "ERROR:not-found" ]]; then
+    err "Package '$pkg' not found in AUR"
+    exit 1
+  fi
+
+  echo ""
+  echo "$output"
+  echo ""
+}
+
+download_tarball() {
+  local pkg="$1" dest="$2"
+  local url="${AUR_BASE_URL}/cgit/aur.git/snapshot/${pkg}.tar.gz"
+  local tarball="/tmp/${pkg}.tar.gz"
+
+  debug "Downloading tarball: $url"
+  if ! curl -fSL "$url" -o "$tarball" 2>/dev/null; then
+    err "Failed to download '$pkg' from AUR"
+    return 1
+  fi
+
+  mkdir -p "$dest"
+  debug "Extracting tarball to: $dest"
+  tar -xzf "$tarball" -C "$dest"
+
+  if [[ -d "${dest}/${pkg}" ]]; then
+    ok "Downloaded '$pkg' to ${dest}/${pkg}"
+  else
+    err "Extraction failed for '$pkg'"
+    return 1
+  fi
+
+  rm -f "$tarball"
+  return 0
+}
+
+download_git() {
+  local pkg="$1" dest="$2"
+  local url="${AUR_BASE_URL}/${pkg}.git"
+  local target="${dest}/${pkg}"
+
+  if [[ -d "$target/.git" ]]; then
+    debug "Existing repo found, pulling: $target"
+    (cd "$target" && git pull --ff-only 2>/dev/null) && {
+      ok "Updated '$pkg' in $target"
+      return 0
+    }
+    warn "Git pull failed for '$pkg', re-cloning..."
+    rm -rf "$target"
+  fi
+
+  debug "Cloning: $url -> $target"
+  if git clone --depth 1 "$url" "$target" 2>/dev/null; then
+    ok "Downloaded '$pkg' to $target"
+    return 0
+  else
+    err "Failed to clone '$pkg' from AUR"
+    return 1
+  fi
+}
+
+download_package() {
+  local pkg="$1" dest="$2"
+  pkg="${pkg%/}"
+  info "Downloading '$pkg'..."
+
+  if $CLONE_MODE; then
+    download_git "$pkg" "$dest" || download_tarball "$pkg" "$dest" || {
+      err "All download methods failed for '$pkg'"
+      return 1
+    }
+  else
+    download_tarball "$pkg" "$dest" || {
+      err "Failed to download '$pkg'"
+      return 1
+    }
+  fi
+
+  if [[ -f "${dest}/${pkg}/PKGBUILD" ]]; then
+    debug "PKGBUILD found for '$pkg'"
+  else
+    warn "No PKGBUILD found in downloaded package '$pkg'"
+  fi
+}
+
+remove_package() {
+  local pkg="$1" dest="$2"
+  local target="${dest}/${pkg}"
+
+  if [[ ! -d "$target" ]]; then
+    err "Package '$pkg' not found in $dest"
+    return 1
+  fi
+
+  info "Removing '$pkg'..."
+  rm -rf "$target"
+  ok "Removed '$pkg' from $dest"
+}
+
+update_all() {
+  local dir="${1:-$BUILD_DIR}"
+
+  if [[ ! -d "$dir" ]]; then
+    err "Directory does not exist: $dir"
+    exit 1
+  fi
+
+  local count=0
+  for pkg_dir in "$dir"/*/; do
+    [[ -d "$pkg_dir" ]] || continue
+    if [[ -d "${pkg_dir}.git" ]] || [[ -f "${pkg_dir}PKGBUILD" ]]; then
+      local pkg_name
+      pkg_name=$(basename "$pkg_dir")
+      info "Updating '$pkg_name'..."
+      if (cd "$pkg_dir" && git pull --ff-only 2>/dev/null); then
+        ok "Updated '$pkg_name'"
+        ((count++))
+      else
+        warn "Failed to update '$pkg_name' (not a git repo or network error)"
+      fi
+    fi
+  done
+
+  if [[ "$count" -eq 0 ]]; then
+    warn "No AUR packages found in $dir"
+  else
+    ok "Updated $count package(s)"
+  fi
+}
+
+is_subcommand() {
+  case "$1" in
+    s|search|i|info|d|download|r|remove|u|update|h|help|V|version) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+main() {
+  local args=()
+  local command=""
+  local search_term=""
+  local info_pkg=""
+  local remove_mode=false
+  local update_mode=false
+  local update_dir=""
+  local custom_path=""
+
+  check_deps
+  load_config
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage ;;
+      -V|--version) version ;;
+      -v|--verbose) VERBOSE=true; shift ;;
+      -q|--quiet) USE_COLOR=false; shift ;;
+      -s|--search) search_term="$2"; shift 2 ;;
+      -i|--info) info_pkg="$2"; shift 2 ;;
+      -p|--path) custom_path="$2"; shift 2 ;;
+      -t|--tarball) CLONE_MODE=false; shift ;;
+      -u|--update) update_mode=true; shift ;;
+      --) shift; args+=("$@"); break ;;
+      -*)
+        err "Unknown option: $1"
+        err "Run 'poleplex h' for help"
+        exit 1
+        ;;
+      *)
+        if [[ -z "$command" ]] && is_subcommand "$1"; then
+          command="$1"; shift
+          case "$command" in
+            s|search)   search_term="${1:-}"; shift 2>/dev/null || true ;;
+            i|info)     info_pkg="${1:-}"; shift 2>/dev/null || true ;;
+            d|download) ;;
+            r|remove)   remove_mode=true ;;
+            u|update)   update_mode=true; update_dir="${1:-}"; shift 2>/dev/null || true ;;
+            h|help)     usage ;;
+            V|version)  version ;;
+          esac
+        else
+          args+=("$1"); shift
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -n "$search_term" ]]; then
+    search_packages "$search_term"
+    exit $?
+  fi
+
+  if [[ -n "$info_pkg" ]]; then
+    package_info "$info_pkg"
+    exit $?
+  fi
+
+  if $update_mode; then
+    update_all "$update_dir"
+    exit $?
+  fi
+
+  if $remove_mode; then
+    local dest="${custom_path:-$BUILD_DIR}"
+    if [[ ${#args[@]} -eq 0 ]]; then
+      err "No package specified to remove"
+      err "Usage: poleplex r <package>"
+      exit 1
+    fi
+    local failed=()
+    for pkg in "${args[@]}"; do
+      remove_package "$pkg" "$dest" || failed+=("$pkg")
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+      exit 1
+    fi
+    exit 0
+  fi
+
+  if [[ ${#args[@]} -eq 0 ]]; then
+    usage
+  fi
+
+  local dest="${custom_path:-$BUILD_DIR}"
+  mkdir -p "$dest"
+
+  local failed=()
+  for pkg in "${args[@]}"; do
+    download_package "$pkg" "$dest" || failed+=("$pkg")
+  done
+
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    err "Failed to download: ${failed[*]}"
+    exit 1
+  fi
+}
+
+main "$@"
