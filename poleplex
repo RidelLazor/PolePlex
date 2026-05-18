@@ -42,6 +42,8 @@ Options:
   -v, --verbose         Verbose output
   -q, --quiet           Suppress color and info output
 
+Install: curl -fsSL https://ridellazor.github.io/PolePlex/install.sh | bash
+
 Shortened form (no dashes needed):
   poleplex s firefox          instead of  poleplex -s firefox
   poleplex i spotify           instead of  poleplex -i spotify

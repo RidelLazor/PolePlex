@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # PolePlex installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/RidelLazor/PolePlex/main/install.sh | bash
-#        curl -fsSL https://raw.githubusercontent.com/RidelLazor/PolePlex/main/install.sh | bash -s -- -p /custom/path
+# Usage: curl -fsSL https://ridellazor.github.io/PolePlex/install.sh | bash
 
 set -euo pipefail
 
 REPO="https://github.com/RidelLazor/PolePlex"
-TARGET="${POLEPLEX_DIR:-${HOME}/poleplex}"
+REPO_DIR="${POLEPLEX_DIR:-${HOME}/poleplex}"
+BIN_DIR="${HOME}/.local/bin"
+BIN_PATH="${BIN_DIR}/poleplex"
 INSTALL_SYSTEM=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -p|--path) TARGET="$2"; shift 2 ;;
+    -p|--path) REPO_DIR="$2"; shift 2 ;;
     -s|--system) INSTALL_SYSTEM=true; shift ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
@@ -30,39 +31,88 @@ if ! command -v git &>/dev/null; then
   exit 1
 fi
 
-if [[ -d "$TARGET/.git" ]]; then
-  info "PolePlex already installed at $TARGET, updating..."
-  (cd "$TARGET" && git pull --ff-only) || { err "Update failed."; exit 1; }
-  ok "Updated to latest version"
+# ── Clone or pull the repo ──────────────────────────────────
+if [[ -d "$REPO_DIR/.git" ]]; then
+  info "PolePlex repo found at $REPO_DIR, updating..."
+  (cd "$REPO_DIR" && git pull --ff-only) || { err "Update failed."; exit 1; }
+  ok "Repo updated"
 else
-  info "Downloading PolePlex to $TARGET..."
-  git clone --depth 1 "$REPO" "$TARGET"
-  ok "Downloaded PolePlex"
+  info "Downloading PolePlex to $REPO_DIR..."
+  git clone --depth 1 "$REPO" "$REPO_DIR"
+  ok "Repo downloaded"
 fi
 
-POLEPLEX_BIN="${TARGET}/poleplex"
-[[ -f "$POLEPLEX_BIN" ]] || { err "poleplex not found at $POLEPLEX_BIN"; exit 1; }
+[[ -f "${REPO_DIR}/poleplex" ]] || { err "poleplex script not found"; exit 1; }
 
+# ── Install the binary ──────────────────────────────────────
 if $INSTALL_SYSTEM; then
   command -v sudo &>/dev/null || { err "sudo not available"; exit 1; }
-  (cd "$TARGET" && sudo make install)
-  ok "PolePlex installed to /usr/local/bin/poleplex"
+  (cd "$REPO_DIR" && sudo make install)
+  ok "PolePlex installed system-wide to /usr/local/bin/poleplex"
 else
-  for rc in "${ZSH_VERSION:+$HOME/.zshrc}" "${BASH_VERSION:+$HOME/.bashrc}" "$HOME/.bashrc" "$HOME/.zshrc"; do
-    [[ -f "$rc" ]] && SHELL_CONFIG="$rc" && break
-  done
-  if [[ -n "${SHELL_CONFIG:-}" ]] && ! grep -q "poleplex" "$SHELL_CONFIG" 2>/dev/null; then
-    { echo; echo "# Added by PolePlex installer"; echo "export PATH=\"\$PATH:${TARGET}\""; } >> "$SHELL_CONFIG"
-    ok "Added poleplex to PATH in $SHELL_CONFIG"
-  fi
+  mkdir -p "$BIN_DIR"
+  install -m755 "${REPO_DIR}/poleplex" "$BIN_PATH"
+  ok "PolePlex installed to $BIN_PATH"
 fi
 
+# ── Install completions ─────────────────────────────────────
+if [[ -d "${REPO_DIR}/completions" ]]; then
+  mkdir -p "${HOME}/.local/share/bash-completion/completions" 2>/dev/null || true
+  mkdir -p "${HOME}/.local/share/zsh/site-functions" 2>/dev/null || true
+  mkdir -p "${HOME}/.config/fish/completions" 2>/dev/null || true
+
+  [[ -f "${REPO_DIR}/completions/poleplex.bash" ]] && \
+    cp "${REPO_DIR}/completions/poleplex.bash" "${HOME}/.local/share/bash-completion/completions/poleplex" 2>/dev/null || true
+  [[ -f "${REPO_DIR}/completions/poleplex.zsh" ]] && \
+    cp "${REPO_DIR}/completions/poleplex.zsh" "${HOME}/.local/share/zsh/site-functions/_poleplex" 2>/dev/null || true
+  [[ -f "${REPO_DIR}/completions/poleplex.fish" ]] && \
+    cp "${REPO_DIR}/completions/poleplex.fish" "${HOME}/.config/fish/completions/poleplex.fish" 2>/dev/null || true
+fi
+
+# ── Install man page ────────────────────────────────────────
+if [[ -f "${REPO_DIR}/man/poleplex.1" ]]; then
+  mkdir -p "${HOME}/.local/share/man/man1" 2>/dev/null || true
+  cp "${REPO_DIR}/man/poleplex.1" "${HOME}/.local/share/man/man1/poleplex.1" 2>/dev/null || true
+fi
+
+# ── Add to PATH in shell config ─────────────────────────────
+SHELL_CONFIG=""
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.config/fish/config.fish"; do
+  [[ -f "$rc" ]] && SHELL_CONFIG="$rc" && break
+done
+
+if [[ -z "${SHELL_CONFIG:-}" ]]; then
+  SHELL_CONFIG="$HOME/.bashrc"
+fi
+
+if ! grep -qF "$BIN_DIR" "$SHELL_CONFIG" 2>/dev/null; then
+  case "$SHELL_CONFIG" in
+    *.fish)
+      echo >> "$SHELL_CONFIG"
+      echo "# Added by PolePlex installer" >> "$SHELL_CONFIG"
+      echo "set -gx PATH \$PATH $BIN_DIR" >> "$SHELL_CONFIG"
+      ;;
+    *)
+      echo >> "$SHELL_CONFIG"
+      echo "# Added by PolePlex installer" >> "$SHELL_CONFIG"
+      echo "export PATH=\"\$PATH:$BIN_DIR\"" >> "$SHELL_CONFIG"
+      ;;
+  esac
+  ok "Added $BIN_DIR to PATH in $SHELL_CONFIG"
+else
+  info "$BIN_DIR already in PATH in $SHELL_CONFIG"
+fi
+
+# ── Done ────────────────────────────────────────────────────
 echo ""
 info "PolePlex is ready!"
-echo "    ${TARGET}/poleplex h"
-echo "    ${TARGET}/poleplex i spotify"
-if ! $INSTALL_SYSTEM; then
-  echo ""
-  echo "    Restart your shell or:  export PATH=\"\$PATH:${TARGET}\""
-fi
+echo ""
+echo "    poleplex h               # show help"
+echo "    poleplex i spotify       # package info"
+echo "    poleplex d yay           # download a package"
+echo "    poleplex r yay           # remove from cache"
+echo "    poleplex u               # update all"
+echo ""
+echo "    Restart your terminal or run:"
+echo "      source $SHELL_CONFIG"
 echo ""
