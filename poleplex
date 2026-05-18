@@ -893,6 +893,62 @@ update_all() {
 }
 
 # ═══════════════════════════════════════════════════════════
+#  Self-update
+# ═══════════════════════════════════════════════════════════
+
+self_update() {
+  local repo_dir="$HOME/poleplex"
+
+  # Allow override via POLEPLEX_DIR env var or config
+  if [[ -n "${POLEPLEX_DIR:-}" ]]; then
+    repo_dir="$POLEPLEX_DIR"
+  fi
+
+  if [[ ! -d "$repo_dir/.git" ]]; then
+    # Check if the script itself lives inside a git repo
+    local script_dir
+    script_dir=$(dirname "$(readlink -f "$0")" 2>/dev/null || dirname "$0")
+    if [[ -d "$script_dir/../.git" ]]; then
+      repo_dir=$(cd "$script_dir/.." && pwd)
+    else
+      info "PolePlex repo not found at $repo_dir — cloning..."
+      git clone --depth 1 "https://github.com/RidelLazor/PolePlex.git" "$repo_dir" || {
+        err "Failed to clone repository"
+        return 1
+      }
+    fi
+  fi
+
+  info "Checking for updates in $repo_dir..."
+  (
+    cd "$repo_dir" || return 1
+    local old_rev
+    old_rev=$(git rev-parse HEAD)
+    git pull --ff-only || {
+      err "Git pull failed"
+      return 1
+    }
+    local new_rev
+    new_rev=$(git rev-parse HEAD)
+
+    if [[ "$old_rev" == "$new_rev" ]]; then
+      ok "Already up to date"
+      return 0
+    fi
+
+    ok "Updated ($(git log --oneline "$old_rev..$new_rev" | wc -l) new commit(s))"
+
+    # Reinstall
+    if make install-local &>/dev/null; then
+      ok "Reinstalled to ~/.local/bin/poleplex"
+    else
+      install -m755 poleplex "$HOME/.local/bin/poleplex" 2>/dev/null && \
+        ok "Reinstalled to ~/.local/bin/poleplex"
+    fi
+  )
+}
+
+# ═══════════════════════════════════════════════════════════
 #  CLI
 # ═══════════════════════════════════════════════════════════
 
@@ -908,6 +964,7 @@ Commands:
   b, build     <pkg>      Download + build only (no install)
   r, remove    <pkg>      Remove a downloaded package from cache
   u, update    [dir]      Update all downloaded packages
+  self-update             Update PolePlex itself via git pull
   h, help                 Show this help message
   V, version              Show version
 
@@ -944,7 +1001,7 @@ version() {
 
 is_subcommand() {
   case "$1" in
-    s|search|info|download|i|install|b|build|r|remove|u|update|h|help|V|version) return 0 ;;
+    s|search|info|download|i|install|b|build|r|remove|u|update|self-update|h|help|V|version) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -998,6 +1055,7 @@ main() {
             b|build)      build_mode=true ;;
             r|remove)     remove_mode=true ;;
             u|update)     update_mode=true; update_dir="${1:-}"; shift 2>/dev/null || true ;;
+            self-update)  self_update; exit $? ;;
             h|help)       usage ;;
             V|version)    version ;;
           esac
