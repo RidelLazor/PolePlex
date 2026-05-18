@@ -605,6 +605,9 @@ build_and_install_aur_deps() {
 
   info "Building ${total} AUR dependencies in ${#depth_groups[@]} batch(es)..."
 
+  # Cache sudo before any parallel jobs (background subshells can't prompt)
+  sudo -v 2>/dev/null || true
+
   local -a failed_deps=()
 
   for group in "${depth_groups[@]}"; do
@@ -687,6 +690,9 @@ install_package() {
   local dest="${CUSTOM_PATH:-$BUILD_DIR}"
   mkdir -p "$dest"
 
+  # Pre-cache sudo (background subshells can't prompt for passwords)
+  sudo -v 2>/dev/null || true
+
   # Step 1: Download target package
   info "Downloading '$pkg'..."
   download_package "$pkg" "$dest" || {
@@ -752,6 +758,9 @@ build_package_only() {
   local pkg="$1"
   local dest="${CUSTOM_PATH:-$BUILD_DIR}"
   mkdir -p "$dest"
+
+  # Pre-cache sudo (background subshells can't prompt for passwords)
+  sudo -v 2>/dev/null || true
 
   info "Downloading '$pkg'..."
   download_package "$pkg" "$dest" || return 1
