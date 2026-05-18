@@ -23,6 +23,7 @@ CHROOT_READY=false
 PARALLEL_JOBS=0
 HAS_DEVTOOLS=false
 INTERACTIVE=false
+TARGET_PKG=""
 
 [[ -t 2 ]] || USE_COLOR=false
 [[ -t 0 && -t 1 ]] && INTERACTIVE=true
@@ -57,8 +58,11 @@ read_key() {
   local key
   IFS= read -r -n1 key 2>/dev/null || key=""
   if [[ "$key" == $'\e' ]]; then
-    local rest
-    IFS= read -r -n2 -t 0.005 rest 2>/dev/null || rest=""
+    local rest=""
+    local byte=""
+    while IFS= read -r -n1 -t 0.002 byte 2>/dev/null; do
+      rest+="$byte"
+    done
     key+="$rest"
   fi
   printf "%s" "$key"
@@ -103,7 +107,7 @@ spinner_start() {
 spinner_stop() {
   [[ -n "$SPINNER_PID" ]] && kill "$SPINNER_PID" 2>/dev/null || true
   SPINNER_PID=""
-  printf "\r%*s\r" "$(tput_cols)" ""
+  $INTERACTIVE && printf "\r%*s\r" "$(tput_cols)" ""
 }
 
 # ── Config ────────────────────────────────────────────────
@@ -140,8 +144,13 @@ check_deps() {
 
 # ── AUR API ───────────────────────────────────────────────
 
+urlencode() {
+  python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$1" 2>/dev/null
+}
+
 aur_api() {
   local type="$1" arg="$2"
+  arg=$(urlencode "$arg")
   if [[ "$type" == "search" ]]; then
     curl -fsS "${AUR_RPC_URL}/search/${arg}" 2>/dev/null || return 1
   elif [[ "$type" == "info" ]]; then
@@ -165,7 +174,7 @@ ${1}
 pkg_count() { aur_json "print(d.get('resultcount', 0))"; }
 pkg_results() { aur_json "
 for p in d.get('results', []):
-    print(p.get('Name', ''), p.get('Version', ''), p.get('Maintainer', 'orphan'), p.get('Description', '')[:80], sep='|')
+    print(p.get('Name', ''), p.get('Version', ''), p.get('Maintainer', 'orphan'), p.get('Description', ''), sep='|')
 "; }
 pkg_field() {
   local field="$1"
@@ -207,283 +216,7 @@ search_packages() {
 
 # ── Interactive search TUI ────────────────────────────────
 
-interactive_search() {
-  local query="${1:-}"
-  local -a names versions authors descs
-  local data count
-  local page_size selected scroll
-  local term_width term_height
-  local mouse_enabled=false
 
-  # Enable SGR mouse tracking
-  mouse_on() {
-    printf '\e[?1000h\e[?1002h\e[?1006h' 2>/dev/null
-    mouse_enabled=true
-  }
-  mouse_off() {
-    printf '\e[?1006l\e[?1002l\e[?1000l' 2>/dev/null
-    mouse_enabled=false
-  }
-
-  stty raw -echo 2>/dev/null || true
-  hide_cursor
-  mouse_on
-
-  # Terminal resize trap
-  trap 'term_width=$(tput_cols); term_height=$(tput_lines); page_size=$(( term_height - 6 )); (( page_size < 5 )) && page_size=5' WINCH
-
-  fetch_results() {
-    data=$(aur_api "search" "$query" 2>/dev/null || echo "")
-    count=$(echo "$data" 2>/dev/null | pkg_count 2>/dev/null || echo 0)
-    names=(); versions=(); authors=(); descs=()
-    if [[ "$count" -gt 0 ]]; then
-      while IFS='|' read -r n v a d; do
-        names+=("$n"); versions+=("$v"); authors+=("$a"); descs+=("$d")
-      done < <(echo "$data" 2>/dev/null | pkg_results 2>/dev/null)
-    fi
-  }
-
-  fetch_results
-
-  term_width=$(tput_cols)
-  term_height=$(tput_lines)
-  page_size=$(( term_height - 7 ))
-  (( page_size < 5 )) && page_size=5
-  selected=0
-  scroll=0
-
-  draw_header() {
-    cursor_pos 0 0
-    local bar
-    bar=$(printf " Search: %s" "$query")
-    # If query is empty, show placeholder
-    if [[ -z "$query" ]]; then
-      printf '\033[1;44m%-*s\033[0m' "$term_width" " Search: [type to search AUR]"
-    else
-      printf '\033[1;44m%-*s\033[0m' "$term_width" "$bar"
-    fi
-  }
-
-  draw_column_headers() {
-    cursor_pos 1 0
-    local name_w author_w ver_w desc_w
-    name_w=30
-    author_w=18
-    ver_w=14
-    desc_w=$(( term_width - name_w - author_w - ver_w - 5 ))
-    (( desc_w < 10 )) && desc_w=10
-    printf '\033[1;37m%-*s %-*s %-*s %s\033[0m' "$name_w" "Package" "$author_w" "Author" "$ver_w" "Version" "Description"
-  }
-
-  draw_results() {
-    local total=${#names[@]}
-    [[ "$scroll" -gt "$selected" ]] && scroll=$selected
-    [[ "$scroll" -lt $(( selected - page_size + 1 )) ]] && scroll=$(( selected - page_size + 1 ))
-    (( scroll < 0 )) && scroll=0
-    (( scroll > total - page_size )) && scroll=$(( total - page_size ))
-    (( scroll < 0 )) && scroll=0
-
-    local end=$(( scroll + page_size ))
-    (( end > total )) && end=$total
-
-    local name_w=30 author_w=18 ver_w=14
-    local desc_w=$(( term_width - name_w - author_w - ver_w - 5 ))
-    (( desc_w < 10 )) && desc_w=10
-
-    local line=2
-    for (( i = scroll; i < end; i++ )); do
-      cursor_pos "$line" 0
-      local entry
-      if [[ "$total" -gt 0 ]]; then
-        local d="${descs[i]}"
-        [[ ${#d} -gt $desc_w ]] && d="${d:0:$(( desc_w - 3 ))}..."
-        entry=$(printf "%-*s %-*s %-*s %s" "$name_w" "${names[i]}" "$author_w" "${authors[i]}" "$ver_w" "${versions[i]}" "$d")
-      fi
-      if [[ "$i" -eq "$selected" ]]; then
-        printf '\033[7m%-*s\033[0m' "$term_width" "$entry"
-      elif (( i % 2 == 1 )); then
-        printf '\033[48;5;236m%-*s\033[0m' "$term_width" "$entry"
-      else
-        printf '%-*s' "$term_width" "$entry"
-      fi
-      ((line++))
-    done
-
-    # Clear remaining result lines
-    while (( line < term_height - 1 )); do
-      cursor_pos "$line" 0
-      printf '%*s' "$term_width" ""
-      ((line++))
-    done
-  }
-
-  draw_footer() {
-    cursor_pos $(( term_height - 1 )) 0
-    local total=${#names[@]}
-    local pos_info
-    if [[ "$total" -gt 0 ]]; then
-      pos_info="$((selected+1))/$total"
-    else
-      pos_info="0/0"
-    fi
-    local footer
-    footer=$(printf ' [↑↓] nav  [Click] select  [Enter] install  [Esc] clear  [q] quit  %s' "$pos_info")
-    printf '\033[1;40m%-*s\033[0m' "$term_width" "$footer"
-  }
-
-  draw_screen() {
-    term_width=$(tput_cols)
-    term_height=$(tput_lines)
-    page_size=$(( term_height - 7 ))
-    (( page_size < 5 )) && page_size=5
-
-    draw_header
-    draw_column_headers
-    draw_results
-    draw_footer
-  }
-
-  local query_changed=false
-  while true; do
-    draw_screen
-    local key
-    key=$(read_key)
-    case "$key" in
-      q|Q) break ;;
-      $'\e[A'|$'A') # Up arrow
-        (( selected > 0 )) && { ((selected--)); query_changed=false; } ;;
-      $'\e[B'|$'B') # Down arrow
-        (( selected < ${#names[@]} - 1 )) && { ((selected++)); query_changed=false; } ;;
-      $'\e[H'|$'1') # Home
-        selected=0; query_changed=false ;;
-      $'\e[F'|$'2') # End
-        selected=$(( ${#names[@]} - 1 )); (( selected < 0 )) && selected=0
-        query_changed=false ;;
-      $'\e[5~') # PageUp
-        (( selected -= page_size )); (( selected < 0 )) && selected=0
-        query_changed=false ;;
-      $'\e[6~') # PageDown
-        (( selected += page_size ))
-        (( selected >= ${#names[@]} )) && selected=$(( ${#names[@]} - 1 ))
-        query_changed=false ;;
-      $'\n'|$'\r') # Enter — install selected
-        if [[ ${#names[@]} -gt 0 && "$selected" -lt ${#names[@]} ]]; then
-          mouse_off; stty sane 2>/dev/null || true; show_cursor
-          echo ""
-          install_package "${names[$selected]}"
-          stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
-        fi
-        ;;
-      $'\e') # ESC — clear query or exit
-        if [[ -n "$query" ]]; then
-          query=""; query_changed=true
-        else
-          break
-        fi
-        ;;
-      $'\177'|$'\b'|$'\x7f') # Backspace
-        query="${query%?}"
-        query_changed=true ;;
-      $'\e[M'*) # Mouse event (SGR/UTF-8 mode)
-        local mouse_data="${key:3}"
-        local btn=$(( $(printf '%d' "'${mouse_data:0:1}") - 32 ))
-        local mx=$(( $(printf '%d' "'${mouse_data:1:1}") - 32 ))
-        local my=$(( $(printf '%d' "'${mouse_data:2:1}") - 33 ))
-
-        # Scroll wheel
-        if [[ "$btn" -eq 64 ]]; then
-          (( selected > 0 )) && ((selected--))
-          query_changed=false
-        elif [[ "$btn" -eq 65 ]]; then
-          (( selected < ${#names[@]} - 1 )) && ((selected++))
-          query_changed=false
-        # Button 1 = left click
-        elif [[ "$btn" -eq 0 ]]; then
-          local click_row=$my
-          local click_idx=$(( scroll + click_row - 2 ))
-          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
-            selected=$click_idx
-            query_changed=false
-          fi
-        # Double click (btn 2) or release — install
-        elif [[ "$btn" -eq 2 || "$btn" -eq 9 ]]; then
-          local click_row=$my
-          local click_idx=$(( scroll + click_row - 2 ))
-          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
-            selected=$click_idx
-            mouse_off; stty sane 2>/dev/null || true; show_cursor
-            echo ""
-            install_package "${names[$selected]}"
-            stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
-          fi
-        fi
-        ;;
-      $'\e[<'*)
-        # SGR mouse format: ESC [ < btn ; x ; y M
-        local sgr_data="${key:2}"
-        local btn mx my
-        btn=$(echo "$sgr_data" | cut -d';' -f1)
-        mx=$(echo "$sgr_data" | cut -d';' -f2)
-        my=$(echo "$sgr_data" | cut -d';' -f3 | sed 's/[MmLl]$//')
-        if [[ "$btn" -eq 64 ]]; then
-          (( selected > 0 )) && ((selected--))
-        elif [[ "$btn" -eq 65 ]]; then
-          (( selected < ${#names[@]} - 1 )) && ((selected++))
-        elif [[ "$btn" -eq 0 ]]; then
-          local click_row=$my
-          local click_idx=$(( scroll + click_row - 2 ))
-          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
-            selected=$click_idx
-          fi
-        elif [[ "$btn" -eq 2 || "$btn" -eq 1 ]]; then
-          local click_row=$my
-          local click_idx=$(( scroll + click_row - 2 ))
-          if (( click_idx >= 0 && click_idx < ${#names[@]} )); then
-            selected=$click_idx
-            mouse_off; stty sane 2>/dev/null || true; show_cursor
-            echo ""
-            install_package "${names[$selected]}"
-            stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
-          fi
-        fi
-        ;;
-      $'\e'*)
-        # Other escape sequences — check for longer mouse sequences
-        if [[ "$key" == $'\e[M'* || "$key" == $'\e[<'* ]]; then
-          : # already handled above
-        fi
-        ;;
-      $'\t') # Tab — cycle through install/build/info
-        if [[ ${#names[@]} -gt 0 && "$selected" -lt ${#names[@]} ]]; then
-          local pkg_name="${names[$selected]}"
-          mouse_off; stty sane 2>/dev/null || true; show_cursor
-          echo ""
-          package_info "$pkg_name"
-          echo ""
-          msg "Press Enter to install, or any key to return to search..."
-          read -r -n1 2>/dev/null || true
-          stty raw -echo 2>/dev/null || true; hide_cursor; mouse_on
-        fi
-        ;;
-      *)
-        if [[ -n "$key" && "$key" != $'\e' ]]; then
-          query+="$key"
-          query_changed=true
-        fi
-        ;;
-    esac
-    if $query_changed; then
-      fetch_results
-      selected=0; scroll=0
-    fi
-  done
-
-  mouse_off
-  stty sane 2>/dev/null || true
-  show_cursor
-  trap - WINCH
-  echo ""
-}
 
 # ─── Package info ─────────────────────────────────────────
 
@@ -651,12 +384,73 @@ resolve_deps() {
 }
 
 # ═══════════════════════════════════════════════════════════
+#  DAG depth analysis for parallel builds
+# ═══════════════════════════════════════════════════════════
+
+declare -A DEP_DEPTHS=()
+
+compute_dep_depths() {
+  local pkg="$1" dest="$2"
+  DEP_DEPTHS=()
+
+  _compute() {
+    local pkg="$1" depth="$2"
+    local stripped
+    stripped=$(strip_dep "$pkg")
+    [[ -z "$stripped" ]] && return
+
+    # Record max depth for this dep
+    local cur="${DEP_DEPTHS[$stripped]:--1}"
+    if (( depth > cur )); then
+      DEP_DEPTHS[$stripped]=$depth
+    fi
+
+    local pkgdir="${dest}/${stripped}"
+    [[ ! -d "$pkgdir" ]] && return
+    local deps
+    deps=$(parse_pkgbuild_deps "$pkgdir")
+    for sub in $deps; do
+      _compute "$sub" $(( depth + 1 ))
+    done
+  }
+
+  local pkgdir="${dest}/${pkg}"
+  if [[ ! -d "$pkgdir" ]]; then
+    return
+  fi
+  local deps
+  deps=$(parse_pkgbuild_deps "$pkgdir")
+  for dep in $deps; do
+    _compute "$dep" 0
+  done
+}
+
+group_deps_by_depth() {
+  local -n deps_ref="$1"
+  declare -A depth_groups
+  local max_depth=0
+
+  for dep in "${deps_ref[@]}"; do
+    local d="${DEP_DEPTHS[$dep]:-0}"
+    depth_groups[$d]+=" $dep"
+    (( d > max_depth )) && max_depth=$d
+  done
+
+  # Print depth groups, deepest first
+  for (( d = max_depth; d >= 0; d-- )); do
+    local group="${depth_groups[$d]:-}"
+    [[ -n "$group" ]] && echo "$d|$group"
+  done
+}
+
+# ═══════════════════════════════════════════════════════════
 #  Chroot management
 # ═══════════════════════════════════════════════════════════
 
 chroot_setup() {
   if ! $HAS_DEVTOOLS; then
     warn "devtools not installed — building without chroot isolation"
+    warn "Install: sudo pacman -S devtools"
     CHROOT_ENABLED=false
     return 1
   fi
@@ -669,15 +463,18 @@ chroot_setup() {
 
   info "Setting up build chroot (this may take a while)..."
   info "  Location: $CHROOT_DIR"
-  info "  This downloads base-devel into the chroot"
+  info "  Downloads base-devel — ~30-60s on first run"
 
   sudo mkdir -p "$CHROOT_DIR"
-  if sudo mkarchroot "$CHROOT_DIR/root" base-devel 2>&1 | tail -5; then
+  if sudo mkarchroot "$CHROOT_DIR/root" base-devel 2>&1; then
     CHROOT_READY=true
     ok "Chroot ready at $CHROOT_DIR"
   else
-    err "Failed to create chroot (try: sudo mkarchroot $CHROOT_DIR/root base-devel)"
+    err "Failed to create chroot"
+    err "  Try manually: sudo mkarchroot $CHROOT_DIR/root base-devel"
+    err "  Falling back to direct makepkg (no isolation)"
     CHROOT_ENABLED=false
+    CHROOT_READY=false
     return 1
   fi
 }
@@ -702,17 +499,25 @@ chroot_setup_local_repo() {
 chroot_build_pkg() {
   local pkg="$1" pkgdir="$2"
   if ! $CHROOT_READY; then
-    # Fallback: direct makepkg
     info "Building '$pkg' with makepkg (no chroot)..."
     (cd "$pkgdir" && makepkg -s --noconfirm) || return 1
     return 0
   fi
 
   info "Building '$pkg' in clean chroot..."
+  local build_ok=true
   (
     cd "$pkgdir"
-    sudo makechrootpkg -c -r "$CHROOT_DIR" -n --noconfirm 2>&1 | tail -3
-  ) || return 1
+    sudo makechrootpkg -c -r "$CHROOT_DIR" -n --noconfirm 2>&1
+  ) || build_ok=false
+
+  if ! $build_ok; then
+    warn "Chroot build failed for '$pkg', falling back to direct makepkg..."
+    (cd "$pkgdir" && makepkg -s --noconfirm) || {
+      err "Both chroot and direct build failed for '$pkg'"
+      return 1
+    }
+  fi
   return 0
 }
 
@@ -723,16 +528,17 @@ chroot_install_pkg() {
   pkgfile=$(find "$pkgdir" -maxdepth 1 -name "*.pkg.tar.zst" -print -quit 2>/dev/null) || true
 
   if [[ -z "$pkgfile" ]]; then
-    if $CHROOT_READY; then
-      pkgfile=$(find /var/lib/poleplex/chroot/"$USER"/build/*/"$pkg" -name "*.pkg.tar.zst" -print -quit 2>/dev/null) || true
-    fi
+    # Search both chroot output and tarball-cached locations
+    pkgfile=$(find /var/lib/poleplex/chroot/"$USER"/build/ -name "${pkg}-*.pkg.tar.zst" -print -quit 2>/dev/null) || true
+  fi
+  if [[ -z "$pkgfile" ]] && $CHROOT_READY; then
+    pkgfile=$(find "$CHROOT_DIR" -path "*/build/*" -name "${pkg}-*.pkg.tar.zst" -print -quit 2>/dev/null) || true
   fi
 
   if [[ -n "$pkgfile" ]]; then
     info "Installing '$pkg' from package file..."
     sudo pacman -U --noconfirm "$pkgfile" || return 1
   else
-    # Fallback: direct makepkg -si
     info "Building and installing '$pkg' directly..."
     (cd "$pkgdir" && sudo makepkg -si --noconfirm) || return 1
   fi
@@ -742,22 +548,26 @@ chroot_add_to_repo() {
   local pkg="$1" pkgdir="$2"
   local pkgfile
 
-  if $CHROOT_READY; then
-    pkgfile=$(find /var/lib/poleplex/chroot/"$USER"/build/*/"$pkg" -name "*.pkg.tar.zst" -print -quit 2>/dev/null) || true
-  else
+  # Search chroot build output first, then local pkgdir
+  pkgfile=$(find /var/lib/poleplex/chroot/ -path "*/build/*" -name "${pkg}-*.pkg.tar.zst" -print -quit 2>/dev/null) || true
+  if [[ -z "$pkgfile" ]]; then
     pkgfile=$(find "$pkgdir" -maxdepth 1 -name "*.pkg.tar.zst" -print -quit 2>/dev/null) || true
   fi
 
-  if [[ -n "$pkgfile" ]]; then
-    sudo cp "$pkgfile" "$REPO_DIR/"
-    (
-      flock "$REPO_LOCK" -c "
-        cd $REPO_DIR
-        sudo repo-add poleplex.db.tar.gz \"$(basename "$pkgfile")\" 2>/dev/null
-      "
-    ) || true
-    debug "Added '$pkg' to local repo"
+  if [[ -z "$pkgfile" ]]; then
+    debug "No package file found for '$pkg' to add to local repo"
+    return 1
   fi
+
+  sudo cp "$pkgfile" "$REPO_DIR/"
+  (
+    flock "$REPO_LOCK" -c "
+      cd $REPO_DIR
+      sudo repo-add poleplex.db.tar.gz \"$(basename "$pkgfile")\" 2>/dev/null
+    "
+  ) || true
+  debug "Added '$pkg' to local repo"
+  return 0
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -770,32 +580,89 @@ build_and_install_aur_deps() {
   local dest="$1"
   local -a aur_deps=("${!2}")
   local total=${#aur_deps[@]}
-  local built=0
 
   if [[ "$total" -eq 0 ]]; then
     return 0
   fi
 
-  info "Building ${total} AUR dependency/ies..."
+  # Compute DAG depths and group by depth
+  info "Resolving dependency graph..."
+  compute_dep_depths "$TARGET_PKG" "$dest"
 
-  # Build deps in parallel (respecting DAG — they're already in leaf-first order)
-  local -a batch=()
-  local prev_depth=0
-  local -a completed=()
+  local -a depth_groups=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && depth_groups+=("$line")
+  done < <(group_deps_by_depth aur_deps)
 
-  for (( i = 0; i < total; i++ )); do
-    local dep="${aur_deps[i]}"
-    local pkgdir="${dest}/${dep}"
-    spinner_start "Building dependency [$((i+1))/$total] '$dep'..."
-    if chroot_build_pkg "$dep" "$pkgdir"; then
-      chroot_add_to_repo "$dep" "$pkgdir"
-      chroot_install_pkg "$dep" "$pkgdir" || true
-      ok "Built dependency '$dep'"
+  info "Building ${total} AUR dependencies in ${#depth_groups[@]} batch(es)..."
+
+  local -a failed_deps=()
+
+  for group in "${depth_groups[@]}"; do
+    local depth="${group%%|*}"
+    local pkgs="${group#*|}"
+    [[ -z "$pkgs" ]] && continue
+
+    # Count packages in this batch
+    local -a batch=($pkgs)
+    local batch_size=${#batch[@]}
+
+    if (( batch_size == 1 )); then
+      # Single dep — build inline
+      local dep="${batch[0]}"
+      local pkgdir="${dest}/${dep}"
+      spinner_start "Building dep '$dep'..."
+      if ! [[ -d "$pkgdir" ]]; then
+        warn "Package directory missing for '$dep', skipping"
+        failed_deps+=("$dep")
+      elif chroot_build_pkg "$dep" "$pkgdir"; then
+        chroot_add_to_repo "$dep" "$pkgdir"
+        chroot_install_pkg "$dep" "$pkgdir" || true
+        ok "Built '$dep'"
+      else
+        warn "Failed to build '$dep'"
+        failed_deps+=("$dep")
+      fi
+      spinner_stop
     else
-      warn "Failed to build dependency '$dep'"
+      # Multiple deps at same depth — build in parallel
+      info "Building ${batch_size} deps in parallel (depth ${depth})..."
+      local pids=()
+      local -a parallel_pkgs=()
+
+      for dep in "${batch[@]}"; do
+        parallel_pkgs+=("$dep")
+        (
+          local pkgdir="${dest}/${dep}"
+          if ! [[ -d "$pkgdir" ]]; then
+            warn "Package directory missing for '$dep', skipping"
+            exit 1
+          fi
+          if chroot_build_pkg "$dep" "$pkgdir"; then
+            chroot_add_to_repo "$dep" "$pkgdir"
+            chroot_install_pkg "$dep" "$pkgdir" || true
+            ok "Built '$dep'"
+            exit 0
+          else
+            warn "Failed to build '$dep'"
+            exit 1
+          fi
+        ) &
+        pids+=($!)
+      done
+
+      # Wait for all parallel builds in this batch
+      local i=0
+      for pid in "${pids[@]}"; do
+        wait "$pid" || failed_deps+=("${parallel_pkgs[i]}")
+        ((i++))
+      done
     fi
-    spinner_stop
   done
+
+  if [[ ${#failed_deps[@]} -gt 0 ]]; then
+    warn "The following AUR dependencies failed to build: ${failed_deps[*]}"
+  fi
 
   # Install repo deps all at once
   if [[ ${#REPO_DEPS[@]} -gt 0 ]]; then
@@ -835,6 +702,7 @@ install_package() {
   done < <(resolve_deps "$pkg" "$dest")
 
   # Step 4: Build and install AUR dependencies
+  TARGET_PKG="$pkg"
   if [[ ${#aur_deps[@]} -gt 0 ]]; then
     info "Found ${#aur_deps[@]} AUR dependencies: ${aur_deps[*]}"
     build_and_install_aur_deps "$dest" aur_deps[@]
@@ -975,17 +843,6 @@ download_package() {
   fi
 }
 
-download_parallel() {
-  local dest="$1"
-  shift
-  local -a pkgs=("$@")
-  info "Downloading ${#pkgs[@]} package(s) in parallel..."
-  printf '%s\n' "${pkgs[@]}" | xargs -P "${PARALLEL_JOBS}" -I{} bash -c "
-    cd '$dest' 2>/dev/null || true
-    # inline download logic
-  " 2>/dev/null || true
-}
-
 # ═══════════════════════════════════════════════════════════
 #  Remove / Update
 # ═══════════════════════════════════════════════════════════
@@ -1044,10 +901,10 @@ usage() {
 Usage: poleplex <command> [options] [package]...
 
 Commands:
-  s, search    <term>     Search AUR (interactive if terminal)
-  i, info      <pkg>      Show detailed package info
-  d, download  <pkg>      Download a package from AUR
-  install      <pkg>      Download + build + install (full AUR helper)
+  s, search    <term>     Search AUR
+  info         <pkg>      Show detailed package info
+  download     <pkg>      Download a package from AUR
+  i, install   <pkg>      Download + build + install (full AUR helper)
   b, build     <pkg>      Download + build only (no install)
   r, remove    <pkg>      Remove a downloaded package from cache
   u, update    [dir]      Update all downloaded packages
@@ -1067,10 +924,15 @@ Install: curl -fsSL https://ridellazor.github.io/PolePlex/install.sh | bash
 Examples:
   poleplex s firefox              interactive search
   poleplex install spotify         full install with deps
-  poleplex b yay                   build only
+  poleplex install yay micro       install multiple packages
+  poleplex b yay                   build only (no pacman -U)
   poleplex i spotify               package info
   poleplex d firefox-dev           download only
-  poleplex -c install yay          build in clean chroot
+  poleplex r yay                   remove from cache
+  poleplex u                       update all downloaded packages
+  poleplex -c install yay          build in clean chroot (needs devtools)
+  poleplex -j 4 install neovim     build with 4 parallel jobs
+  poleplex -p ~/aur install x      use custom build directory
 EOF
   exit 0
 }
@@ -1082,12 +944,15 @@ version() {
 
 is_subcommand() {
   case "$1" in
-    s|search|i|info|d|download|install|b|build|r|remove|u|update|h|help|V|version) return 0 ;;
+    s|search|info|download|i|install|b|build|r|remove|u|update|h|help|V|version) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 main() {
+  # Clean up on Ctrl+C during builds
+  trap 'spinner_stop; stty sane 2>/dev/null || true; show_cursor; echo ""; exit 1' INT
+
   local args=()
   local command=""
   local search_term=""
@@ -1127,9 +992,9 @@ main() {
           command="$1"; shift
           case "$command" in
             s|search)     search_term="${1:-}"; shift 2>/dev/null || true ;;
-            i|info)       info_pkg="${1:-}"; shift 2>/dev/null || true ;;
+            info)         info_pkg="${1:-}"; shift 2>/dev/null || true ;;
             d|download)   ;;
-            install)      install_mode=true ;;
+            i|install)    install_mode=true ;;
             b|build)      build_mode=true ;;
             r|remove)     remove_mode=true ;;
             u|update)     update_mode=true; update_dir="${1:-}"; shift 2>/dev/null || true ;;
@@ -1143,13 +1008,9 @@ main() {
     esac
   done
 
-  # ── Search (interactive if terminal) ──
+  # ── Search (plain text only) ──
   if [[ -n "$search_term" ]]; then
-    if $INTERACTIVE; then
-      interactive_search "$search_term"
-    else
-      search_packages "$search_term"
-    fi
+    search_packages "$search_term"
     exit $?
   fi
 
@@ -1184,13 +1045,9 @@ main() {
   # ── Install (full AUR helper mode) ──
   if $install_mode; then
     if [[ ${#args[@]} -eq 0 ]]; then
-      if $INTERACTIVE; then
-        interactive_search
-      else
-        err "No package specified"
-        err "Usage: poleplex install <package>"
-        exit 1
-      fi
+      err "No package specified"
+      err "Usage: poleplex install <package>"
+      exit 1
     else
       for pkg in "${args[@]}"; do
         install_package "$pkg"
