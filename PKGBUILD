@@ -1,20 +1,19 @@
-# Maintainer: Danish <danish@anomalyco.dev>
-# Contributor: Danish <danish@anomalyco.dev>
+# Maintainer: RidelLazor <danishfauza9@gmail.com>
 
 pkgname=poleplex
 pkgver=1.0.0
 pkgrel=1
 pkgdesc='A minimalist AUR package downloader'
 arch=('any')
-url='https://github.com/anomalyco/poleplex'
+url='https://github.com/RidelLazor/PolePlex'
 license=('MIT')
 depends=('curl' 'git' 'tar')
 makedepends=()
-optdepends=()
+optdepends=('make: install with make')
 provides=('poleplex')
 conflicts=()
 replaces=()
-source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/heads/main.tar.gz")
 sha256sums=('SKIP')
 install=poleplex.install
 

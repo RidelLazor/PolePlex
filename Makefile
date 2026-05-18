@@ -7,7 +7,10 @@ BASHCOMP ?= ${PREFIX}/share/bash-completion/completions
 ZSHCOMP  ?= ${PREFIX}/share/zsh/site-functions
 FISHCOMP ?= ${PREFIX}/share/fish/vendor_completions.d
 
-.PHONY: install uninstall man completions
+LOCAL_DIR ?= ${HOME}/.local
+LOCAL_BIN ?= ${LOCAL_DIR}/bin
+
+.PHONY: install uninstall install-local bashrc completions man
 
 install: poleplex completions man
 	install -Dm755 poleplex ${DESTDIR}${BINDIR}/poleplex
@@ -18,6 +21,21 @@ install: poleplex completions man
 	install -Dm644 completions/poleplex.zsh ${DESTDIR}${ZSHCOMP}/_poleplex
 	install -Dm644 completions/poleplex.fish ${DESTDIR}${FISHCOMP}/poleplex.fish
 	@echo "PolePlex installed to ${DESTDIR}${BINDIR}/poleplex"
+
+install-local: poleplex
+	mkdir -p ${LOCAL_BIN}
+	install -m755 poleplex ${LOCAL_BIN}/poleplex
+	@echo "PolePlex installed to ${LOCAL_BIN}/poleplex"
+
+bashrc: install-local
+	@if ! grep -q "poleplex" ${HOME}/.bashrc 2>/dev/null; then \
+		echo "" >> ${HOME}/.bashrc; \
+		echo "# Added by PolePlex installer" >> ${HOME}/.bashrc; \
+		echo "export PATH=\"\$$PATH:${LOCAL_BIN}\"" >> ${HOME}/.bashrc; \
+		echo "Added poleplex to PATH in ~/.bashrc"; \
+	else \
+		echo "poleplex already in ~/.bashrc"; \
+	fi
 
 uninstall:
 	rm -f ${DESTDIR}${BINDIR}/poleplex
