@@ -7,11 +7,13 @@ _arguments -C \
   '(-V --version)'{-V,--version}'[Show version]' \
   '(-v --verbose)'{-v,--verbose}'[Verbose output]' \
   '(-q --quiet)'{-q,--quiet}'[Suppress informational output]' \
-  '(-s --search)'{-s,--search}'[Search AUR for packages]:search term:' \
-  '(-i --info)'{-i,--info}'[Show package info from AUR]:package:' \
-  '(-p --path)'{-p,--path}'[Download/remove from specific directory]:directory:_files -/' \
-  '(-t --tarball)'{-t,--tarball}'[Use tarball download instead of git clone]' \
-  '(-u --update)'{-u,--update}'[Update all AUR packages in directory]:directory:_files -/' \
+  '(-c --chroot)'{-c,--chroot}'[Enable clean chroot builds]' \
+  '(-j --jobs)'{-j,--jobs}'[Parallel build jobs]:number:' \
+  '(-s --search)'{-s,--search}'[Search AUR]:search term:' \
+  '(-i --info)'{-i,--info}'[Show package info]:package:' \
+  '(-p --path)'{-p,--path}'[Working directory]:directory:_files -/' \
+  '(-t --tarball)'{-t,--tarball}'[Use tarball instead of git clone]' \
+  '(-u --update)'{-u,--update}'[Update all packages]:directory:_files -/' \
   '1:command:->cmds' \
   '*::args:->args'
 
@@ -24,6 +26,9 @@ case "$state" in
       "info:Package info"
       "d:Download package"
       "download:Download package"
+      "install:Download + build + install"
+      "b:Build only"
+      "build:Build only"
       "r:Remove package"
       "remove:Remove package"
       "u:Update all"
@@ -36,7 +41,7 @@ case "$state" in
     ;;
   args)
     case "$words[1]" in
-      d|download|r|remove)
+      d|download|install|b|build|r|remove)
         _arguments ':package:' ;;
       u|update)
         _arguments ':directory:_files -/' ;;

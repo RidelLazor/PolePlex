@@ -44,6 +44,14 @@ fi
 
 [[ -f "${REPO_DIR}/poleplex" ]] || { err "poleplex script not found"; exit 1; }
 
+# ── Suggest devtools for chroot builds ──────────────────────
+if ! command -v mkarchroot &>/dev/null; then
+  echo ""
+  info "Tip: Install devtools for clean chroot builds:"
+  info "     sudo pacman -S devtools"
+  echo ""
+fi
+
 # ── Install the binary ──────────────────────────────────────
 if $INSTALL_SYSTEM; then
   command -v sudo &>/dev/null || { err "sudo not available"; exit 1; }
