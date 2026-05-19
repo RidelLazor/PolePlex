@@ -1,9 +1,9 @@
 # Maintainer: RidelLazor <danishfauza9@gmail.com>
 
 pkgname=poleplex
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
-pkgdesc='A minimalist AUR package downloader'
+pkgdesc='Minimalist AUR helper with dependency resolution, clean chroot builds, and parallel compilation'
 arch=('any')
 url='https://github.com/RidelLazor/PolePlex'
 license=('MIT')
@@ -18,7 +18,7 @@ sha256sums=('SKIP')
 install=poleplex.install
 
 package() {
-  cd "${srcdir}/${pkgname}-${pkgver}"
+  cd "${srcdir}/PolePlex-main"
 
   install -Dm755 poleplex "${pkgdir}/usr/bin/poleplex"
 
