@@ -259,23 +259,25 @@ parse_pkgbuild_field() {
   local pkgbuild="${pkgdir}/PKGBUILD"
   [[ -f "$pkgbuild" ]] || return 1
 
-  # Extract the array without sourcing: match `field=(...)` across lines
-  # Handles: field=('a' 'b')  and multiline: field=(\n'a'\n'b'\n)
-  local raw
-  raw=$(sed -n "/^${field}=/,/^)/p" "$pkgbuild" 2>/dev/null | \
-        tr -d '\n' | \
-        grep -o "'[^']*'" | \
-        tr -d "'" || true)
-
-  # Also try: field=(a b)  without quotes (for simple strings)
-  if [[ -z "$raw" ]]; then
-    raw=$(sed -n "/^${field}=/,/^)/p" "$pkgbuild" 2>/dev/null | \
-          tr -d '\n' | \
-          sed 's/^[^=]*=//' | \
-          grep -o '([^)]*)' | \
-          tr -d '()' || true)
-  fi
-  echo "$raw"
+  python3 -c "
+import re, sys
+try:
+    content = open('$pkgbuild').read()
+    # Match field=(...) with single or multiline content
+    m = re.search(r'\\b${field}=\(([^()]*)\)', content, re.DOTALL)
+    if m:
+        vals = m.group(1)
+        # Extract all single-quoted values
+        found = re.findall(r\"'([^']*)'\", vals)
+        if found:
+            print('\\n'.join(found))
+        else:
+            # Fallback: unquoted space-separated values
+            unquoted = vals.strip().split()
+            print('\\n'.join(unquoted))
+except Exception:
+    sys.exit(1)
+" 2>/dev/null || true
 }
 
 parse_pkgbuild_deps() {
@@ -289,10 +291,12 @@ parse_pkgbuild_deps() {
 strip_dep() {
   # Remove version constraints: pkg>=1.0 -> pkg, pkg=2 -> pkg
   # Handle alternatives: foo|bar -> foo
+  # Strip architecture constraint: python:any -> python
   local dep="$1"
   dep="${dep%%[><=]*}"
   dep="${dep%%[\|]*}"
   dep="${dep//[[:space:]]/}"
+  dep="${dep%%:*}"
   echo "$dep"
 }
 
