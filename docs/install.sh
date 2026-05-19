@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PolePlex installer
-# Usage: curl -fsSL https://ridellazor.github.io/PolePlex/ | bash
+# Usage: curl -fsSL https://ridellazor.github.io/PolePlex/install.sh | bash
 
 set -euo pipefail
 

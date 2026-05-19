@@ -1017,7 +1017,7 @@ Options:
   -q, --quiet             Suppress color and info output
   -y, --noconfirm         Skip confirmation prompts; auto-cache sudo via SUDO_PASSWORD
 
-Install: curl -fsSL https://ridellazor.github.io/PolePlex/ | bash
+Install: curl -fsSL https://ridellazor.github.io/PolePlex/install.sh | bash
 
 Examples:
   poleplex s firefox              interactive search
