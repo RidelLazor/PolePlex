@@ -96,7 +96,7 @@ spinner_start() {
   if $INTERACTIVE; then
     local i=0
     (while $INTERACTIVE; do
-      printf "\r  %s %s" "${SPINNER_FRAMES[i]}" "$msg"
+      printf "\r  %s %s" "${SPINNER_FRAMES[i]}" "$msg" >&2
       (( i = (i + 1) % ${#SPINNER_FRAMES[@]} ))
       sleep 0.08
     done) &
@@ -107,7 +107,7 @@ spinner_start() {
 spinner_stop() {
   [[ -n "$SPINNER_PID" ]] && kill "$SPINNER_PID" 2>/dev/null || true
   SPINNER_PID=""
-  $INTERACTIVE && printf "\r%*s\r" "$(tput_cols)" ""
+  $INTERACTIVE && printf "\r%*s\r" "$(tput_cols)" "" >&2
 }
 
 # ── Config ────────────────────────────────────────────────
@@ -388,8 +388,8 @@ resolve_deps() {
     done
   fi
 
-  # Print resolved order
-  for p in "${RESOLVED_ORDER[@]}"; do echo "$p"; done
+    # Print resolved order (DEP: prefix to distinguish from spinner/info noise)
+  for p in "${RESOLVED_ORDER[@]}"; do echo "DEP:$p"; done
 }
 
 group_deps_by_depth() {
@@ -685,8 +685,8 @@ install_package() {
   local pkgdir="${dest}/${pkg}"
 
   local -a aur_deps=()
-  while IFS= read -r dep; do
-    [[ -n "$dep" ]] && aur_deps+=("$dep")
+  while IFS= read -r line; do
+    [[ "$line" == DEP:* ]] && aur_deps+=("${line#DEP:}")
   done < <(resolve_deps "$pkg" "$dest")
 
   # Step 4: Build and install AUR dependencies
@@ -746,8 +746,8 @@ build_package_only() {
   local pkgdir="${dest}/${pkg}"
 
   local -a aur_deps=()
-  while IFS= read -r dep; do
-    [[ -n "$dep" ]] && aur_deps+=("$dep")
+  while IFS= read -r line; do
+    [[ "$line" == DEP:* ]] && aur_deps+=("${line#DEP:}")
   done < <(resolve_deps "$pkg" "$dest")
 
   if [[ ${#aur_deps[@]} -gt 0 ]]; then
