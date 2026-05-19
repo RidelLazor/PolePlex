@@ -671,6 +671,17 @@ install_package() {
   # Pre-cache sudo (background subshells can't prompt for passwords)
   sudo -v 2>/dev/null || true
 
+  # Step 0: Check official repos first
+  if is_repo_pkg "$pkg"; then
+    info "'$pkg' is available in official repositories — installing with pacman"
+    sudo pacman -S --noconfirm "$pkg" || {
+      err "Failed to install '$pkg' from repository"
+      return 1
+    }
+    ok "Installed '$pkg' from repositories"
+    return 0
+  fi
+
   # Step 1: Download target package
   info "Downloading '$pkg'..."
   download_package "$pkg" "$dest" || {
@@ -738,6 +749,11 @@ build_package_only() {
 
   # Pre-cache sudo (background subshells can't prompt for passwords)
   sudo -v 2>/dev/null || true
+
+  if is_repo_pkg "$pkg"; then
+    info "'$pkg' is available in official repositories — skipping AUR build"
+    return 0
+  fi
 
   info "Downloading '$pkg'..."
   download_package "$pkg" "$dest" || return 1
