@@ -1,6 +1,6 @@
 # PolePlex
 
-A minimalist AUR package downloader — fast, simple, dependency-free beyond the basics.
+A minimalist AUR package downloader. fast, simple, dependency-free beyond the basics.
 
 ## Features
 
