@@ -24,7 +24,6 @@ PARALLEL_JOBS=0
 HAS_DEVTOOLS=false
 INTERACTIVE=false
 NOCONFIRM=false
-TARGET_PKG=""
 
 [[ -t 2 ]] || USE_COLOR=false
 [[ -t 0 && -t 1 ]] && INTERACTIVE=true
@@ -316,13 +315,16 @@ is_aur_pkg() {
   [[ "$count" -gt 0 ]]
 }
 
+declare -A DEP_DEPTHS=()
+
 resolve_deps() {
   local pkg="$1" dest="$2"
   RESOLVED_ORDER=()
   RESOLVED_SEEN=()
+  DEP_DEPTHS=()
 
   _resolve() {
-    local pkg="$1"
+    local pkg="$1" depth="$2"
     local stripped
     stripped=$(strip_dep "$pkg")
     [[ -z "$stripped" ]] && return
@@ -364,8 +366,14 @@ resolve_deps() {
     local sub_deps
     sub_deps=$(parse_pkgbuild_deps "$pkgdir")
     for sub in $sub_deps; do
-      _resolve "$sub"
+      _resolve "$sub" $(( depth + 1 ))
     done
+
+    # Record max DAG depth for parallel batching
+    local cur="${DEP_DEPTHS[$stripped]:--1}"
+    if (( depth > cur )); then
+      DEP_DEPTHS[$stripped]=$depth
+    fi
 
     # Record this pkg for building (leaf-first order)
     RESOLVED_ORDER+=("$stripped")
@@ -376,54 +384,12 @@ resolve_deps() {
     local deps
     deps=$(parse_pkgbuild_deps "$pkgdir")
     for dep in $deps; do
-      _resolve "$dep"
+      _resolve "$dep" 0
     done
   fi
 
   # Print resolved order
   for p in "${RESOLVED_ORDER[@]}"; do echo "$p"; done
-}
-
-# ═══════════════════════════════════════════════════════════
-#  DAG depth analysis for parallel builds
-# ═══════════════════════════════════════════════════════════
-
-declare -A DEP_DEPTHS=()
-
-compute_dep_depths() {
-  local pkg="$1" dest="$2"
-  DEP_DEPTHS=()
-
-  _compute() {
-    local pkg="$1" depth="$2"
-    local stripped
-    stripped=$(strip_dep "$pkg")
-    [[ -z "$stripped" ]] && return
-
-    # Record max depth for this dep
-    local cur="${DEP_DEPTHS[$stripped]:--1}"
-    if (( depth > cur )); then
-      DEP_DEPTHS[$stripped]=$depth
-    fi
-
-    local pkgdir="${dest}/${stripped}"
-    [[ ! -d "$pkgdir" ]] && return
-    local deps
-    deps=$(parse_pkgbuild_deps "$pkgdir")
-    for sub in $deps; do
-      _compute "$sub" $(( depth + 1 ))
-    done
-  }
-
-  local pkgdir="${dest}/${pkg}"
-  if [[ ! -d "$pkgdir" ]]; then
-    return
-  fi
-  local deps
-  deps=$(parse_pkgbuild_deps "$pkgdir")
-  for dep in $deps; do
-    _compute "$dep" 0
-  done
 }
 
 group_deps_by_depth() {
@@ -605,10 +571,6 @@ build_and_install_aur_deps() {
     return 0
   fi
 
-  # Compute DAG depths and group by depth
-  info "Resolving dependency graph..."
-  compute_dep_depths "$TARGET_PKG" "$dest"
-
   local -a depth_groups=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && depth_groups+=("$line")
@@ -728,7 +690,6 @@ install_package() {
   done < <(resolve_deps "$pkg" "$dest")
 
   # Step 4: Build and install AUR dependencies
-  TARGET_PKG="$pkg"
   if [[ ${#aur_deps[@]} -gt 0 ]]; then
     info "Found ${#aur_deps[@]} AUR dependencies: ${aur_deps[*]}"
     build_and_install_aur_deps "$dest" aur_deps[@]
