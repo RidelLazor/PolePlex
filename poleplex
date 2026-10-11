@@ -6,6 +6,7 @@ declare -r VERSION="1.0.0"
 declare -r AUR_BASE_URL="https://aur.archlinux.org"
 declare -r AUR_RPC_URL="${AUR_BASE_URL}/rpc/v5"
 declare -r ARCH_PACKAGES_URL="https://archlinux.org/packages/search/json/"
+declare -r POLLINATIONS_URL="https://text.pollinations.ai/openai"
 declare -r CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/poleplex"
 declare -r CONFIG_FILE="${CONFIG_DIR}/poleplex.conf"
 declare -r BUILD_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/poleplex/build"
@@ -114,29 +115,26 @@ check_build_deps() {
 
 check_pkgbuild_deps() {
   local pkg_dir="$1"
-  
+
   if [[ ! -f "${pkg_dir}/PKGBUILD" ]]; then
     return 0
   fi
 
-  # Extract makedepends from PKGBUILD
   local makedepends
   makedepends=$(grep "^makedepends=" "${pkg_dir}/PKGBUILD" 2>/dev/null | head -1 | sed "s/^makedepends=//" | tr -d "()'\"")
-  
+
   if [[ -z "$makedepends" ]]; then
     return 0
   fi
 
-  # Check which are missing
   local missing=()
   for dep in $makedepends; do
-    # Remove version specifiers (e.g., "pkg>=1.0")
     dep="${dep%>=*}"
     dep="${dep%<=*}"
     dep="${dep%==*}"
     dep="${dep%>*}"
     dep="${dep%<*}"
-    
+
     if ! pacman -Q "$dep" &>/dev/null 2>&1; then
       missing+=("$dep")
     fi
@@ -145,11 +143,10 @@ check_pkgbuild_deps() {
   if [[ ${#missing[@]} -gt 0 ]]; then
     warn "Missing build dependencies: ${missing[*]}"
     info "Install them with: sudo pacman -S ${missing[*]}"
-    
-    # Ask to install
+
     printf "%s " "$(color '1;33' 'Install now?')" >&2
     read -r -t 5 -p "[y/n] " response </dev/tty 2>/dev/null || response="n"
-    
+
     if [[ "$response" == "y" || "$response" == "Y" ]]; then
       if sudo pacman -S "${missing[@]}"; then
         ok "Dependencies installed"
@@ -165,6 +162,81 @@ check_pkgbuild_deps() {
   fi
 
   return 0
+}
+
+ai_suggest_fix() {
+  local log_file="$1"
+  local summary
+  summary=$(tail -n 120 "$log_file" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
+  local prompt
+  prompt=$(
+    cat <<EOF
+You are an expert Arch Linux package maintainer. Diagnose this build error and return only one shell command that fixes it, or NO_FIX if there is no confident fix.
+
+Build log:
+${summary}
+EOF
+  )
+
+  local payload
+  payload=$(python3 - "$prompt" <<'PY'
+import json, sys
+prompt = sys.argv[1]
+print(json.dumps({
+  "model": "gpt-4o-mini",
+  "messages": [{"role": "user", "content": prompt}],
+  "temperature": 0.2
+}, separators=(",", ":")))
+PY
+)
+
+  local raw_response
+  raw_response=$(curl -fsSL -X POST "$POLLINATIONS_URL" -H "Content-Type: application/json" --data "$payload" 2>/dev/null) || return 1
+
+  local suggestion
+  suggestion=$(printf '%s' "$raw_response" | python3 - <<'PY'
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    print('NO_FIX')
+    sys.exit(0)
+try:
+    obj = json.loads(raw)
+except Exception:
+    print(raw.strip())
+    sys.exit(0)
+if isinstance(obj, dict):
+    if 'choices' in obj and isinstance(obj['choices'], list) and obj['choices']:
+        first = obj['choices'][0]
+        if isinstance(first, dict):
+            message = first.get('message', {})
+            if isinstance(message, dict):
+                content = message.get('content')
+                if content:
+                    print(str(content).strip())
+                    sys.exit(0)
+            text = first.get('text')
+            if text:
+                print(str(text).strip())
+                sys.exit(0)
+    for key in ('output', 'text', 'answer', 'content'):
+        if key in obj:
+            print(str(obj[key]).strip())
+            sys.exit(0)
+print(raw.strip())
+PY
+)
+
+  suggestion=$(printf '%s\n' "$suggestion" | sed '/^```/d' | sed '1s/^bash //; 1s/^sh //; s/^```//; s/```$//' | head -n 1)
+  suggestion=${suggestion//$'\r'/}
+  suggestion=${suggestion##[[:space:]]*}
+  suggestion=${suggestion%%[[:space:]]*}
+
+  if [[ -z "$suggestion" || "$suggestion" == "NO_FIX" || "$suggestion" == "no_fix" || "$suggestion" == "no fix" || "$suggestion" == "NOFIX" ]]; then
+    return 1
+  fi
+
+  printf '%s' "$suggestion"
 }
 
 aur_api() {
@@ -185,14 +257,14 @@ package_exists_in_aur() {
   local pkg="$1"
   local data
   data=$(aur_api "info" "$pkg" 2>/dev/null) || return 1
-  
+
   local count
   count=$(echo "$data" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 print(len(d.get('results', [])))
 " 2>/dev/null) || count=0
-  
+
   [[ "$count" -gt 0 ]]
 }
 
@@ -200,15 +272,12 @@ search_packages() {
   local term="$*"
   info "Searching AUR and official packages for: $term"
 
-  # Search AUR
   local aur_data
   aur_data=$(aur_api "search" "$term" 2>/dev/null) || aur_data=""
-  
-  # Search official Arch packages
+
   local arch_data
   arch_data=$(arch_api "$term" 2>/dev/null) || arch_data=""
 
-  # Check if we got any results
   local aur_count=0
   if [[ -n "$aur_data" ]]; then
     aur_count=$(echo "$aur_data" | python3 -c "
@@ -240,7 +309,6 @@ except:
 
   echo ""
 
-  # Display AUR results
   if [[ "$aur_count" -gt 0 ]]; then
     printf "$(color '1;33' '=== AUR Packages ===\n')"
     printf "  %-30s %-12s %s\n" "Package" "Version" "Description"
@@ -259,7 +327,6 @@ for pkg in d.get('results', []):
     echo ""
   fi
 
-  # Display official Arch results
   if [[ "$arch_count" -gt 0 ]]; then
     printf "$(color '1;32' '=== Official Arch Packages ===\n')"
     printf "  %-25s %-12s %-10s %s\n" "Package" "Version" "Repo" "Description"
@@ -284,10 +351,9 @@ package_info() {
   local pkg="$1"
   info "Fetching info for: $pkg"
 
-  # Try AUR first
   local data
   data=$(aur_api "info" "$pkg" 2>/dev/null) || data=""
-  
+
   local aur_found=0
   if [[ -n "$data" ]]; then
     aur_found=$(echo "$data" | python3 -c "
@@ -331,10 +397,9 @@ for label, val in fields:
     return 0
   fi
 
-  # Try official Arch repositories
   local arch_data
   arch_data=$(arch_api "$pkg" 2>/dev/null) || arch_data=""
-  
+
   if [[ -n "$arch_data" ]]; then
     local arch_found
     arch_found=$(echo "$arch_data" | python3 -c "
@@ -375,7 +440,6 @@ for pkg in results:
     fi
   fi
 
-  # Not found in either
   err "Package '$pkg' not found in AUR or official repositories"
   exit 1
 }
@@ -434,10 +498,9 @@ download_git() {
 download_package() {
   local pkg="$1" dest="$2"
   pkg="${pkg%/}"
-  
+
   info "Downloading '$pkg'..."
 
-  # Check if package exists in AUR
   if ! package_exists_in_aur "$pkg"; then
     err "'$pkg' not found in AUR"
     err "It may be an official Arch package. Try: pacman -S $pkg"
@@ -478,7 +541,6 @@ build_package() {
     return 1
   fi
 
-  # Check for missing build dependencies
   if ! check_pkgbuild_deps "$pkg_dir"; then
     return 1
   fi
@@ -486,38 +548,57 @@ build_package() {
   info "Building '$pkg'..."
   debug "Build directory: $pkg_dir"
 
-  (
-    cd "$pkg_dir"
-    if makepkg -s 2>&1; then
-      ok "Built '$pkg' successfully"
-      return 0
-    else
-      err "Build failed for '$pkg'"
-      return 1
+  local build_log
+  build_log=$(mktemp)
+
+  if makepkg -s >"$build_log" 2>&1; then
+    ok "Built '$pkg' successfully"
+    rm -f "$build_log"
+    return 0
+  fi
+
+  cat "$build_log"
+  err "Build failed for '$pkg'"
+
+  local suggestion
+  suggestion=$(ai_suggest_fix "$build_log") || suggestion=""
+  if [[ -n "$suggestion" ]]; then
+    echo
+    info "AI suggested fix: $suggestion"
+    printf "%s " "$(color '1;33' 'Apply fix and retry?')" >&2
+    read -r -t 15 -p "[y/N] " response </dev/tty 2>/dev/null || response="n"
+    if [[ "$response" == "y" || "$response" == "Y" ]]; then
+      if bash -lc "$suggestion"; then
+        if makepkg -s >"$build_log" 2>&1; then
+          ok "Built '$pkg' successfully after AI-assisted fix"
+          rm -f "$build_log"
+          return 0
+        fi
+      fi
     fi
-  )
+  fi
+
+  rm -f "$build_log"
+  return 1
 }
 
 install_package() {
   local pkg="$1" dest="$2"
   local pkg_dir="${dest}/${pkg}"
 
-  # First download the package if not present
   if [[ ! -d "$pkg_dir" ]]; then
     download_package "$pkg" "$dest" || return 1
   fi
 
-  # Build the package
   build_package "$pkg" "$dest" || return 1
 
   info "Installing '$pkg'..."
 
-  # Find the built package and install it
   (
     cd "$pkg_dir"
     local pkg_file
     pkg_file=$(ls -t ./*.pkg.tar.zst 2>/dev/null | head -1)
-    
+
     if [[ -z "$pkg_file" ]]; then
       err "No built package found in $pkg_dir"
       return 1
@@ -681,7 +762,6 @@ main() {
     fi
     local failed=()
     for pkg in "${args[@]}"; do
-      # Download if not present
       if [[ ! -d "${dest}/${pkg}" ]]; then
         download_package "$pkg" "$dest" || failed+=("$pkg") && continue
       fi
