@@ -1,50 +1,52 @@
 # PolePlex
 
-A minimalist AUR package downloader. fast, simple, dependency-free beyond the basics.
+A minimalist Arch Linux AUR package downloader built for speed, simplicity, and convenience.
+
+PolePlex helps you search for, inspect, download, and update AUR packages without the overhead of larger package managers.
 
 ## Features
 
-- **Download AUR packages** via git clone (default) or tarball fallback
-- **Search AUR** for packages — `poleplex s <term>`
-- **View package info** — `poleplex i <pkg>`
-- **Remove** downloaded packages — `poleplex r <pkg>`
-- **Update all** downloaded packages — `poleplex u`
-- **Short commands** — no dashes needed: `s`, `i`, `d`, `r`, `u`
-- **Colorized output** with verbose and quiet modes
-- **Configurable** via `~/.config/poleplex/poleplex.conf`
+- Search AUR packages with `poleplex s <term>`
+- View package metadata with `poleplex i <pkg>`
+- Download packages with `poleplex d <pkg>` or just `poleplex <pkg>`
+- Remove cached packages with `poleplex r <pkg>`
+- Update all downloaded packages with `poleplex u`
+- Use git clone or tarball fallback for downloads
+- Works with short commands: `s`, `i`, `d`, `r`, `u`
+- Colorized output with verbose and quiet modes
+- Configurable via `~/.config/poleplex/poleplex.conf`
 
-## Dependencies
+## Requirements
 
-- `curl` — for AUR RPC queries and tarball downloads
-- `git` — for cloning AUR package repos
-- `tar` — for extracting tarball fallback
+PolePlex depends on:
 
-All three are part of the `base-devel` group on Arch Linux.
+- `curl`
+- `git`
+- `tar`
 
-## Installation
+These are typically available as part of the Arch `base-devel` group.
 
-### One-liner (via GitHub Pages)
+## Quick install
+
+### Install directly from GitHub
 
 ```bash
-curl -fsSL https://anomalyco.github.io/poleplex/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/RidelLazor/PolePlex/master/install.sh | bash
 ```
 
-Installs to `~/poleplex`, adds to PATH. Run it again to update.
+This installs PolePlex to the system default prefix and makes the `poleplex` command available immediately.
 
-### From AUR
+### Install to a custom prefix
 
 ```bash
-# Once PolePlex is on the AUR:
-yay -S poleplex
-# or
-paru -S poleplex
+curl -fsSL https://raw.githubusercontent.com/RidelLazor/PolePlex/master/install.sh | PREFIX=~/.local bash
 ```
 
-### From source
+### Install from source
 
 ```bash
-git clone https://github.com/anomalyco/poleplex
-cd poleplex
+git clone https://github.com/RidelLazor/PolePlex.git
+cd PolePlex
 sudo make install
 ```
 
@@ -54,9 +56,29 @@ To install to a custom prefix:
 make install PREFIX=~/.local
 ```
 
+### Install from AUR
+
+```bash
+yay -S poleplex
+# or
+paru -S poleplex
+```
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RidelLazor/PolePlex/master/uninstall.sh | bash
+```
+
+To uninstall from a custom prefix:
+
+```bash
+PREFIX=~/.local bash uninstall.sh
+```
+
 ## Usage
 
-```
+```text
 Usage: poleplex <command> [options] [package]...
 
 Commands:
@@ -75,18 +97,18 @@ Options:
   -q, --quiet           Suppress color and info output
 ```
 
-### Examples
+## Examples
 
 ```bash
-# Search AUR (short form)
+# Search AUR
 poleplex s firefox
 
-# View package info (short form)
+# View package info
 poleplex i spotify
 
-# Download a package (short form or bare name)
+# Download a package
 poleplex d yay
-poleplex yay           # same thing, bare name = download
+poleplex yay
 
 # Download multiple packages to a specific directory
 poleplex d -p ~/aur yay paru
@@ -100,7 +122,7 @@ poleplex d -t firefox-developer
 # Update all previously downloaded packages
 poleplex u
 
-# Old-style flags still work too:
+# Legacy flags still work
 poleplex -s firefox
 poleplex -i spotify
 poleplex -p ~/builds yay paru
@@ -119,27 +141,34 @@ BUILD_DIR="$HOME/aur"
 CLONE_MODE=false
 ```
 
-## Project Structure
+## Project structure
 
-```
-poleplex/
-├── poleplex            # Main script
+```text
+PolePlex/
+├── poleplex            # Main executable
 ├── PKGBUILD            # AUR package definition
-├── poleplex.install    # Install scriptlet for AUR package
-├── Makefile            # Install/uninstall targets
-├── LICENSE             # MIT License
-├── README.md           # This file
-├── docs/               # GitHub Pages (anomalyco.github.io/poleplex)
-│   ├── index.html      # Landing page
-│   └── install.sh      # Bootstrap installer
-├── completions/        # Shell completion files
+├── poleplex.install    # Install scriptlet
+├── install.sh          # One-line installer
+├── uninstall.sh        # One-line uninstaller
+├── Makefile            # System installation targets
+├── LICENSE             # MIT license
+├── README.md           # Project documentation
+├── docs/               # GitHub Pages content
+│   ├── index.html
+│   └── install.sh
+├── completions/        # Shell completions
 │   ├── poleplex.bash
 │   ├── poleplex.zsh
 │   └── poleplex.fish
-└── man/
-    └── poleplex.1      # Man page
+├── man/                # Man page
+│   └── poleplex.1
+└── .gitignore
 ```
 
 ## License
 
 MIT
+
+## Repository
+
+- GitHub: https://github.com/RidelLazor/PolePlex
