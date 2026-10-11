@@ -120,6 +120,21 @@ aur_api() {
   fi
 }
 
+package_exists_in_aur() {
+  local pkg="$1"
+  local data
+  data=$(aur_api "info" "$pkg" 2>/dev/null) || return 1
+  
+  local count
+  count=$(echo "$data" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(len(d.get('results', [])))
+" 2>/dev/null) || count=0
+  
+  [[ "$count" -gt 0 ]]
+}
+
 search_packages() {
   local term="$*"
   info "Searching AUR for: $term"
@@ -260,7 +275,15 @@ download_git() {
 download_package() {
   local pkg="$1" dest="$2"
   pkg="${pkg%/}"
+  
   info "Downloading '$pkg'..."
+
+  # Check if package exists in AUR
+  if ! package_exists_in_aur "$pkg"; then
+    err "'$pkg' not found in AUR"
+    err "It may be an official Arch package. Try: pacman -S $pkg"
+    return 1
+  fi
 
   if $CLONE_MODE; then
     download_git "$pkg" "$dest" || download_tarball "$pkg" "$dest" || {
