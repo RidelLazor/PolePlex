@@ -31,6 +31,8 @@ Commands:
   s, search  <term>     Search AUR for packages
   i, info    <pkg>      Show detailed package info
   d, download <pkg>     Download a package from AUR (default)
+  b, build   <pkg>      Download and build with makepkg
+  x, install <pkg>      Download, build, and install package
   r, remove  <pkg>      Remove a downloaded package from cache
   u, update  [dir]      Update all downloaded packages
   h, help               Show this help message
@@ -46,6 +48,8 @@ Shortened form (no dashes needed):
   poleplex s firefox          instead of  poleplex -s firefox
   poleplex i spotify           instead of  poleplex -i spotify
   poleplex d firefox-dev       instead of  poleplex firefox-dev
+  poleplex b firefox-dev       build package
+  poleplex x firefox-dev       build and install package
   poleplex r firefox-dev       remove from cache
   poleplex u                   update everything
 
@@ -59,6 +63,8 @@ Examples:
   poleplex s  firefox
   poleplex i  spotify
   poleplex d  yay paru
+  poleplex b  yay paru
+  poleplex x  yay
   poleplex r  yay
   poleplex u
   poleplex -p ~/aur yay paru
@@ -90,6 +96,17 @@ check_deps() {
   if [[ ${#missing[@]} -gt 0 ]]; then
     err "Missing dependencies: ${missing[*]}"
     err "Install them with your package manager."
+    exit 1
+  fi
+}
+
+check_build_deps() {
+  local missing=()
+  command -v makepkg &>/dev/null || missing+=("makepkg")
+  command -v sudo &>/dev/null || missing+=("sudo")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    err "Missing build dependencies: ${missing[*]}"
+    err "Install 'base-devel' group: sudo pacman -S base-devel"
     exit 1
   fi
 }
@@ -264,6 +281,72 @@ download_package() {
   fi
 }
 
+build_package() {
+  local pkg="$1" dest="$2"
+  local pkg_dir="${dest}/${pkg}"
+
+  if [[ ! -d "$pkg_dir" ]]; then
+    err "Package directory not found: $pkg_dir"
+    err "Download the package first with: poleplex d $pkg"
+    return 1
+  fi
+
+  if [[ ! -f "${pkg_dir}/PKGBUILD" ]]; then
+    err "PKGBUILD not found in $pkg_dir"
+    return 1
+  fi
+
+  info "Building '$pkg'..."
+  debug "Build directory: $pkg_dir"
+
+  (
+    cd "$pkg_dir"
+    if makepkg -s 2>&1; then
+      ok "Built '$pkg' successfully"
+      return 0
+    else
+      err "Build failed for '$pkg'"
+      return 1
+    fi
+  )
+}
+
+install_package() {
+  local pkg="$1" dest="$2"
+  local pkg_dir="${dest}/${pkg}"
+
+  # First download the package if not present
+  if [[ ! -d "$pkg_dir" ]]; then
+    download_package "$pkg" "$dest" || return 1
+  fi
+
+  # Build the package
+  build_package "$pkg" "$dest" || return 1
+
+  info "Installing '$pkg'..."
+
+  # Find the built package and install it
+  (
+    cd "$pkg_dir"
+    local pkg_file
+    pkg_file=$(ls -t ./*.pkg.tar.zst 2>/dev/null | head -1)
+    
+    if [[ -z "$pkg_file" ]]; then
+      err "No built package found in $pkg_dir"
+      return 1
+    fi
+
+    debug "Installing: $pkg_file"
+    if sudo pacman -U "$pkg_file" 2>&1; then
+      ok "Installed '$pkg' successfully"
+      return 0
+    else
+      err "Installation failed for '$pkg'"
+      return 1
+    fi
+  )
+}
+
 remove_package() {
   local pkg="$1" dest="$2"
   local target="${dest}/${pkg}"
@@ -311,7 +394,7 @@ update_all() {
 
 is_subcommand() {
   case "$1" in
-    s|search|i|info|d|download|r|remove|u|update|h|help|V|version) return 0 ;;
+    s|search|i|info|d|download|b|build|x|install|r|remove|u|update|h|help|V|version) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -323,6 +406,8 @@ main() {
   local info_pkg=""
   local remove_mode=false
   local update_mode=false
+  local build_mode=false
+  local install_mode=false
   local update_dir=""
   local custom_path=""
 
@@ -353,6 +438,8 @@ main() {
             s|search)   search_term="${1:-}"; shift 2>/dev/null || true ;;
             i|info)     info_pkg="${1:-}"; shift 2>/dev/null || true ;;
             d|download) ;;
+            b|build)    build_mode=true ;;
+            x|install)  install_mode=true ;;
             r|remove)   remove_mode=true ;;
             u|update)   update_mode=true; update_dir="${1:-}"; shift 2>/dev/null || true ;;
             h|help)     usage ;;
@@ -390,6 +477,47 @@ main() {
     local failed=()
     for pkg in "${args[@]}"; do
       remove_package "$pkg" "$dest" || failed+=("$pkg")
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+      exit 1
+    fi
+    exit 0
+  fi
+
+  if $build_mode; then
+    check_build_deps
+    local dest="${custom_path:-$BUILD_DIR}"
+    if [[ ${#args[@]} -eq 0 ]]; then
+      err "No package specified to build"
+      err "Usage: poleplex b <package>"
+      exit 1
+    fi
+    local failed=()
+    for pkg in "${args[@]}"; do
+      # Download if not present
+      if [[ ! -d "${dest}/${pkg}" ]]; then
+        download_package "$pkg" "$dest" || failed+=("$pkg") && continue
+      fi
+      build_package "$pkg" "$dest" || failed+=("$pkg")
+    done
+    if [[ ${#failed[@]} -gt 0 ]]; then
+      exit 1
+    fi
+    exit 0
+  fi
+
+  if $install_mode; then
+    check_build_deps
+    local dest="${custom_path:-$BUILD_DIR}"
+    if [[ ${#args[@]} -eq 0 ]]; then
+      err "No package specified to install"
+      err "Usage: poleplex x <package>"
+      exit 1
+    fi
+    mkdir -p "$dest"
+    local failed=()
+    for pkg in "${args[@]}"; do
+      install_package "$pkg" "$dest" || failed+=("$pkg")
     done
     if [[ ${#failed[@]} -gt 0 ]]; then
       exit 1
