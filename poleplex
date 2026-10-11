@@ -627,9 +627,8 @@ build_package() {
   local pkg_dir="${dest}/${pkg}"
 
   if [[ ! -d "$pkg_dir" ]]; then
-    err "Package directory not found: $pkg_dir"
-    err "Download the package first with: poleplex d $pkg"
-    return 1
+    info "Package directory not found, downloading '$pkg' first..."
+    download_package "$pkg" "$dest" || return 1
   fi
 
   if [[ ! -f "${pkg_dir}/PKGBUILD" ]]; then
@@ -647,11 +646,11 @@ build_package() {
   local build_log
   build_log=$(mktemp)
 
-  if makepkg -s >"$build_log" 2>&1; then
+  (cd "$pkg_dir" && makepkg -s >"$build_log" 2>&1) && {
     ok "Built '$pkg' successfully"
     rm -f "$build_log"
     return 0
-  fi
+  }
 
   cat "$build_log"
   err "Build failed for '$pkg'"
@@ -664,8 +663,8 @@ build_package() {
     printf "%s " "$(color '1;33' 'Apply fix and retry?')" >&2
     read -r -t 15 -p "[y/N] " response </dev/tty 2>/dev/null || response="n"
     if [[ "$response" == "y" || "$response" == "Y" ]]; then
-      if bash -lc "$suggestion"; then
-        if makepkg -s >"$build_log" 2>&1; then
+      if (cd "$pkg_dir" && bash -lc "$suggestion"); then
+        if (cd "$pkg_dir" && makepkg -s >"$build_log" 2>&1); then
           ok "Built '$pkg' successfully after AI-assisted fix"
           rm -f "$build_log"
           return 0
@@ -859,11 +858,9 @@ main() {
       err "Usage: poleplex b <package>"
       exit 1
     fi
+    mkdir -p "$dest"
     local failed=()
     for pkg in "${args[@]}"; do
-      if [[ ! -d "${dest}/${pkg}" ]]; then
-        download_package "$pkg" "$dest" || failed+=("$pkg") && continue
-      fi
       build_package "$pkg" "$dest" || failed+=("$pkg")
     done
     if [[ ${#failed[@]} -gt 0 ]]; then
