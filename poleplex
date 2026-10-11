@@ -112,6 +112,61 @@ check_build_deps() {
   fi
 }
 
+check_pkgbuild_deps() {
+  local pkg_dir="$1"
+  
+  if [[ ! -f "${pkg_dir}/PKGBUILD" ]]; then
+    return 0
+  fi
+
+  # Extract makedepends from PKGBUILD
+  local makedepends
+  makedepends=$(grep "^makedepends=" "${pkg_dir}/PKGBUILD" 2>/dev/null | head -1 | sed "s/^makedepends=//" | tr -d "()'\"")
+  
+  if [[ -z "$makedepends" ]]; then
+    return 0
+  fi
+
+  # Check which are missing
+  local missing=()
+  for dep in $makedepends; do
+    # Remove version specifiers (e.g., "pkg>=1.0")
+    dep="${dep%>=*}"
+    dep="${dep%<=*}"
+    dep="${dep%==*}"
+    dep="${dep%>*}"
+    dep="${dep%<*}"
+    
+    if ! pacman -Q "$dep" &>/dev/null 2>&1; then
+      missing+=("$dep")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    warn "Missing build dependencies: ${missing[*]}"
+    info "Install them with: sudo pacman -S ${missing[*]}"
+    
+    # Ask to install
+    printf "%s " "$(color '1;33' 'Install now?')" >&2
+    read -r -t 5 -p "[y/n] " response </dev/tty 2>/dev/null || response="n"
+    
+    if [[ "$response" == "y" || "$response" == "Y" ]]; then
+      if sudo pacman -S "${missing[@]}"; then
+        ok "Dependencies installed"
+        return 0
+      else
+        err "Failed to install dependencies"
+        return 1
+      fi
+    else
+      err "Build dependencies missing. Install and try again."
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 aur_api() {
   local type="$1" arg="$2"
   if [[ "$type" == "search" ]]; then
@@ -420,6 +475,11 @@ build_package() {
 
   if [[ ! -f "${pkg_dir}/PKGBUILD" ]]; then
     err "PKGBUILD not found in $pkg_dir"
+    return 1
+  fi
+
+  # Check for missing build dependencies
+  if ! check_pkgbuild_deps "$pkg_dir"; then
     return 1
   fi
 
