@@ -3,6 +3,11 @@
 set -euo pipefail
 
 declare -r VERSION="1.0.0"
+declare -r GITHUB_REPO="RidelLazor/PolePlex"
+declare -r GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+declare -r UPDATE_CHECK_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/poleplex/update_check"
+declare -r CACHE_TTL=86400
+
 declare -r AUR_BASE_URL="https://aur.archlinux.org"
 declare -r AUR_RPC_URL="${AUR_BASE_URL}/rpc/v5"
 declare -r ARCH_PACKAGES_URL="https://archlinux.org/packages/search/json/"
@@ -72,7 +77,7 @@ Examples:
   poleplex -p ~/aur yay paru
   poleplex -t firefox-dev
 
-Report bugs at: https://github.com/anomalyco/poleplex/issues
+Report bugs at: https://github.com/RidelLazor/PolePlex/issues
 EOF
   exit 0
 }
@@ -162,6 +167,97 @@ check_pkgbuild_deps() {
   fi
 
   return 0
+}
+
+check_for_updates() {
+  mkdir -p "$(dirname "$UPDATE_CHECK_CACHE")"
+
+  local cache_time=0
+  if [[ -f "$UPDATE_CHECK_CACHE" ]]; then
+    cache_time=$(stat -f%m "$UPDATE_CHECK_CACHE" 2>/dev/null || stat -c%Y "$UPDATE_CHECK_CACHE" 2>/dev/null || echo 0)
+  fi
+
+  local current_time
+  current_time=$(date +%s)
+  local time_diff=$((current_time - cache_time))
+
+  if [[ $time_diff -lt $CACHE_TTL && -f "$UPDATE_CHECK_CACHE" ]]; then
+    debug "Update check cache still valid"
+    return 0
+  fi
+
+  debug "Checking for updates from GitHub..."
+
+  local latest_release
+  latest_release=$(curl -fsSL "$GITHUB_API" 2>/dev/null | python3 -c "
+import sys, json
+try:
+  data = json.load(sys.stdin)
+  tag = data.get('tag_name', '').lstrip('v')
+  if tag:
+    print(tag)
+except:
+  pass
+" 2>/dev/null) || latest_release=""
+
+  if [[ -z "$latest_release" ]]; then
+    debug "Could not fetch latest version from GitHub"
+    touch "$UPDATE_CHECK_CACHE"
+    return 0
+  fi
+
+  echo "$latest_release" > "$UPDATE_CHECK_CACHE"
+
+  local current_version="${VERSION}"
+  if [[ "$latest_release" != "$current_version" ]]; then
+    local newer=0
+    if printf '%s\n%s' "$current_version" "$latest_release" | sort -V | head -1 | grep -q "^${current_version}$"; then
+      newer=1
+    fi
+
+    if [[ $newer -eq 1 && "$current_version" != "$latest_release" ]]; then
+      echo ""
+      warn "A new version of PolePlex is available: v${latest_release} (current: v${current_version})"
+      info "GitHub: https://github.com/${GITHUB_REPO}/releases/tag/v${latest_release}"
+      echo ""
+
+      printf "%s " "$(color '1;33' 'Would you like to update to the latest version?')" >&2
+      read -r -t 15 -p "[Y/n] " response </dev/tty 2>/dev/null || response="Y"
+
+      if [[ "$response" != "n" && "$response" != "N" ]]; then
+        update_poleplex
+      fi
+    fi
+  fi
+}
+
+update_poleplex() {
+  info "Updating PolePlex..."
+
+  local script_path
+  script_path=$(command -v poleplex) || script_path="$0"
+
+  if [[ ! -w "$script_path" ]]; then
+    warn "Cannot write to $script_path, attempting sudo..."
+    if ! command -v sudo &>/dev/null; then
+      err "sudo not available. Cannot update."
+      return 1
+    fi
+    if ! sudo bash -c "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/master/poleplex -o '$script_path' && chmod +x '$script_path'"; then
+      err "Failed to update PolePlex"
+      return 1
+    fi
+  else
+    if ! curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/master/poleplex -o "$script_path"; then
+      err "Failed to download update"
+      return 1
+    fi
+    chmod +x "$script_path"
+  fi
+
+  ok "PolePlex updated successfully"
+  info "Please run your command again with the new version"
+  exit 0
 }
 
 ai_suggest_fix() {
@@ -681,6 +777,9 @@ main() {
 
   check_deps
   load_config
+
+  # Check for updates at startup (runs in background to not block the command)
+  check_for_updates &
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
